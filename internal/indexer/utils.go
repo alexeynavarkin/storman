@@ -14,7 +14,7 @@ func splitReader(r io.Reader, n int) []io.ReadCloser {
 	pws := make([]*io.PipeWriter, n)
 	readers := make([]io.ReadCloser, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		pr, pw := io.Pipe()
 		prs[i] = pr
 		pws[i] = pw
@@ -33,7 +33,7 @@ func splitReader(r io.Reader, n int) []io.ReadCloser {
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {
-				for i := 0; i < len(pws); i++ {
+				for i := range pws {
 					if slices.Contains(closedReaders, i) {
 						continue
 					}
