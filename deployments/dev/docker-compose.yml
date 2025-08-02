@@ -1,0 +1,10 @@
+services:
+  postgres:
+    image: postgres:latest
+    restart: always
+    environment:
+      POSTGRES_DB: storman
+      POSTGRES_USER: storman
+      POSTGRES_PASSWORD: storman
+    ports:
+      - "5432:5432"
