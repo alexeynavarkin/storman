@@ -16,7 +16,7 @@ type Object struct {
 	Name string
 	Path string
 
-	Size uint64
+	SizeBytes uint64
 
 	ModifiedTimestamp *time.Time
 	CreatedTimestamp  *time.Time

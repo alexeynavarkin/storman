@@ -58,7 +58,7 @@ func (wi *WebdavConnector) Traverse(ctx context.Context, objCh chan Object) erro
 			objCh <- Object{
 				Name:              obj.Name(),
 				Path:              objPath,
-				Size:              uint64(obj.Size()),
+				SizeBytes:         uint64(obj.Size()),
 				ModifiedTimestamp: utils.Ptr(obj.ModTime()),
 				CreatedTimestamp:  nil,
 			}

@@ -11,7 +11,7 @@ type Object struct {
 
 	ContentType string
 
-	Size uint64
+	SizeBytes uint64
 
 	HashSumSHA512 string
 
@@ -21,4 +21,5 @@ type Object struct {
 
 type Index interface {
 	Store(obj Object) error
+	GetByPath(path string) (*Object, error)
 }
