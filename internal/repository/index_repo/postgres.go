@@ -19,7 +19,19 @@ func (i *PostgresIndex) GetByPath(path string) (*Object, error) {
 	var obj Object
 
 	err := i.db.QueryRow(
-		"SELECT path, name, extension, contentType, hashSumSHA512, modifiedTimestamp, createdTimestamp FROM objects WHERE path = $1",
+		`
+			SELECT
+				path,
+				name,
+				sizeBytes,
+				extension,
+				contentType,
+				hashSumSHA512,
+				modifiedTimestamp,
+				createdTimestamp
+			FROM objects
+			WHERE path = $1
+		`,
 		path,
 	).Scan(
 		&obj.Path,
@@ -45,7 +57,6 @@ func (i *PostgresIndex) GetByPath(path string) (*Object, error) {
 func (i *PostgresIndex) Store(obj Object) error {
 	_, err := i.db.Exec(
 		`
-
 		INSERT INTO objects (
 			path,
 			name,
