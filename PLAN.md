@@ -5,8 +5,8 @@
 Ключевые особенности:
     Цель: Создать самодостаточную, безопасную и производительную систему для личного использования, которая сочетает удобство облачных хранилищ с полным контролем над данными и простотой администрирования.
     Простота: Запуск одним бинарём Go (внешняя зависимость — PostgreSQL), embedded Web UI и миграции.
-    Честное хранение: Пользовательские файлы лежат на диске «как есть». Рядом с каждым файлом и в каждой папке обязательный side-car `*.meta.json` со служебной информацией (ACL, хеши, настройки). В будущем — опциональный CAS-режим, включаемый на уровне директории и наследуемый потомками (см. §5).
-    Надежность: Полная восстановимость метаданных, структуры и прав из файлов на диске при потере БД.
+    Честное хранение: Пользовательские файлы лежат на диске «как есть» — никаких side-car'ов рядом, никакого замусоривания storage_root. Метаданные — в БД. В будущем — опциональный CAS-режим (`CDCFile`), включаемый на уровне директории и наследуемый потомками (см. §5).
+    Надежность: Двухуровневая DR-стратегия — периодические `pg_dump` в `<storage-meta-dir>/backups/` → fsck по диску как последняя линия. См. §3.4.
     Безопасность:
         - Гибкий RBAC: в БД хранятся только явные права, traverse-права вычисляются виртуально и кэшируются.
         - Временные анонимные share-links (только Web).
@@ -20,19 +20,23 @@
 ### 1. Структуризация требований
 
 #### 📦 Ядро и Хранение
-*   **Single Binary + PostgreSQL:** Чистый Go, статическая линковка, embedded assets (web UI, миграции). Внешняя зависимость — PostgreSQL (осознанный компромисс взамен SQLite ради конкурентных writer'ов, JSONB, FTS, `ltree` и партиционирования).
-*   **Disk Layout:** Пользовательские файлы лежат «как есть» (бэкенд `FlatFile` — единственный в MVP). Рядом с каждым файлом лежит side-car `<filename>.meta.json`, в каждой папке — `.meta.json`. Служебные данные (корзина, журнал, временные загрузки; в будущем — CDC blobstore) изолированы в скрытой `.storage_meta/`.
+*   **Single Binary + PostgreSQL:** Чистый Go, статическая линковка, embedded assets (web UI, миграции). Внешняя зависимость — PostgreSQL (осознанный компромисс взамен SQLite ради конкурентных writer'ов, JSONB, `ltree` и партиционирования).
+*   **Disk Layout:** Один параметр в конфиге — `data-dir`. Внутри фиксированная раскладка:
+    *   `<data-dir>/config.json` — локальные настройки сервиса (ключ шифрования секретов и т.п.).
+    *   `<data-dir>/flat-storage/` — пользовательские файлы как есть (бэкенд `FlatFile` — единственный в MVP). Рядом с файлами **ничего не лежит** — никаких `.meta.json`. Это то, что пользователь видит через FUSE/FTP/Web; то, что бэкапится Time Machine'ом и т.п. Далее в документе обозначается как `storage-dir`.
+    *   `<data-dir>/meta-storage/` — служебные данные: корзина, временные загрузки, PG-бэкапы, в будущем — CDC blobstore. Далее в документе обозначается как `storage-meta-dir`.
+    *   Оба подкаталога — внутри одного `data-dir`, всегда на одной файловой системе по построению, поэтому `rename` между staging и целевым путём атомарен. Никаких отдельных проверок `st_dev` не требуется.
 *   **Storage Abstraction:** Два уровня — `FileSystem` (фасад над деревом узлов для всех протоколов: Web, FTP, FUSE, WebDAV, S3) и `FileBackend` (хранение содержимого одного файла). Каждый узел в `nodes` содержит `backend_kind` + `backend_ref`. Бэкенд для **новых** файлов выбирается по effective `folder_settings.storage_backend` родителя (наследуется через ltree). Существующие файлы остаются на своём бэкенде; смена настройки папки их не трогает. Подробнее — §2 «Storage Abstraction». Готовится почва для `CDCFile` (см. §5), но в MVP реализуется только `FlatFile`.
-*   **Инвариант side-car:** Storage-слой гарантирует, что `*.meta.json` и `.storage_meta/` нельзя читать/писать/создавать/удалять через публичные API (Web/FTP/share-links). Они принадлежат системе. Наличие side-car обязательно для каждого узла; его отсутствие — inconsistency, лечится `fsck`.
-*   **Восстановимость:** Метаданные в БД избыточны по отношению к side-car. Команда `recover` обходит диск, читает side-car'ы и полностью воссоздаёт `nodes`, `permissions`, `node_meta`, `folder_settings`.
+*   **Инвариант служебных путей:** `storage-meta-dir` физически отделён от `storage-dir` (соседние каталоги внутри `data-dir`), поэтому Web/FTP/FUSE по построению не видят служебные данные. Никакого path-фильтра в Storage Driver не требуется.
+*   **DR-стратегия (§3.4):** БД — единственный источник правды для метаданных. Recovery работает по нисходящей: (1) `recover --from-backup` из `pg_dump`-дампа в `<storage-meta-dir>/backups/`; (2) `recover --from-disk` — последняя линия, walks дерево, создаёт узлы со sha256 и owner-only ACL, расширенная мета теряется.
 
 #### 🔐 Безопасность и RBAC
 *   **Модель прав:** `User -> Resource -> Action` (Read/Write/Remove/Admin).
-*   **Явные права only:** В БД (`permissions`) и в side-car хранятся **только явно заданные** права. Никаких `is_explicit`/`auto_granted` флагов и виртуальных записей в персистентном состоянии.
+*   **Явные права only:** В БД (`permissions`) хранятся **только явно заданные** права. Никаких `is_explicit`/`auto_granted` флагов и виртуальных записей в персистентном состоянии.
 *   **Наследование:**
     *   *Down:* если явного права на узле нет — поднимаемся вверх по дереву до первого предка с явным правом. Результат кэшируется в ACL Cache.
     *   *Up (Traverse):* если у пользователя есть любое явное право на потомке узла `N`, то на всех предках `N` виртуально выдаётся `Traverse`. Это чистая функция от `permissions`, вычисляется на лету и кэшируется.
-*   **Admin право:** отдельный бит в маске. Проверяется при изменении настроек папки, правил версионирования и ACL.
+*   **Admin право:** отдельный бит в маске. Проверяется при изменении настроек папки, правил версионирования и ACL. Глобальный администратор = пользователь с `Admin` на корне дерева (наследуется вниз через ltree-lookup ближайшего предка).
 *   **Анонимный доступ (только Web):** временные share-links (токен + TTL + scope Read/Write/Remove) для файлов и папок. FTP и другие протоколы анонимный доступ **не** поддерживают — scope ограничен сознательно.
 
 #### 📂 Функционал файловой системы
@@ -42,8 +46,8 @@
 
 #### 🔍 Индексация и Метаданные
 *   **Асинхронность:** двухэтапная обработка.
-    *   *Sync:* базовая мета (путь, размер, mtime, тип) пишется сразу в БД и в side-car.
-    *   *Async:* воркеры считают хеши, парсят EXIF, делают face recognition; пишут в БД и обновляют side-car.
+    *   *Sync:* базовая мета (путь, размер, mtime, тип) пишется сразу в БД.
+    *   *Async:* воркеры считают хеши, парсят EXIF, делают face recognition; пишут в БД.
 *   **Расширяемость:** новые экстракторы добавляются как самостоятельные worker-ы, публикующие результаты в `node_meta.extra` (JSONB) + опционально в типизированные колонки для часто используемых полей.
 
 ---
@@ -76,63 +80,55 @@
 │  │                 Infrastructure Layer                     │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────┐  │   │
 │  │  │PostgreSQL│ │  Outbox  │ │  Storage │ │   Workers   │  │   │
-│  │  │JSONB/FTS │ │ Journal  │ │  Driver  │ │  Pipeline   │  │   │
-│  │  │ ltree    │ │          │ │(side-car)│ │             │  │   │
+│  │  │  JSONB   │ │          │ │  Driver  │ │  Pipeline   │  │   │
+│  │  │  ltree   │ │          │ │(FileBe.) │ │             │  │   │
 │  │  └──────────┘ └──────────┘ └──────────┘ └─────────────┘  │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 #### 💾 Структура данных на диске
+**Раскладка** (фиксированная, всё внутри `data-dir`):
+
 ```text
-/storage/
-├── photos/
-│   ├── .meta.json              # Side-car папки: ACL, folder settings
-│   ├── image.jpg               # Файл как есть
-│   └── image.jpg.meta.json     # Side-car файла: ACL, sha256, versions refs
-├── docs/
-│   ├── .meta.json
-│   ├── report.pdf
-│   └── report.pdf.meta.json
-└── .storage_meta/              # Системная папка, невидима через API
+<data-dir>/                     # = config.data_dir, например /var/lib/storman
+├── config.json                 # Локальные настройки сервиса (ключ шифрования секретов и т.п.)
+├── flat-storage/               # storage-dir: пользовательские файлы как есть, без side-car
+│   ├── photos/
+│   │   └── image.jpg
+│   └── docs/
+│       └── report.pdf
+└── meta-storage/               # storage-meta-dir: служебные данные
     ├── trash/
     │   └── <node_uuid>/
     │       ├── payload         # удалённый файл/поддерево
     │       └── trash.meta.json # original_path, deleted_by, deleted_at, acl_snapshot
+    │                           # — служебная мета корзинной записи (для undelete без БД),
+    │                           #   не side-car пользовательского файла
     ├── uploads/                # Временные чанки tus, FTP STOR и staging для FileWriter
-    ├── journal/                # Fallback-журнал (если PG недоступна на старте recover)
-    ├── blobs/                  # [§5, отложено] CDC blobstore: chunks/<aa>/<bb>/<sha256>, manifests/<id>.json
-    └── config.json             # Глобальные настройки (ключ шифрования секретов и т.п.)
+    ├── backups/                # PG-дампы (§3.4): <ISO-ts>.dump
+    └── blobs/                  # [§5, отложено] CDC blobstore: chunks/<aa>/<bb>/<sha256>, manifests/<id>.json
 ```
 
-**Формат side-car (`<file>.meta.json`):**
+**Конфигурация (фрагмент):**
 ```json
 {
-  "schema": 1,
-  "node_id": "uuid",
-  "type": "file",
-  "size": 12345,
-  "mtime": "2026-04-01T10:00:00Z",
-  "sha256": "hex...",
-  "mime": "image/jpeg",
-  "backend": { "kind": "flat", "ref": "photos/image.jpg" },
-  "acl": [
-    { "user_id": "uuid", "actions": ["Read", "Write"] }
-  ],
-  "extra": { "exif": { ... } }
+  "data_dir": "/var/lib/storman"
 }
 ```
 
-**Инварианты side-car:**
-- Storage Driver перехватывает все операции над `*.meta.json` и `.storage_meta/`: Web/FTP видят их как несуществующие, попытки записи отклоняются с `EACCES`.
-- Side-car пишется атомарно (`tmp → fsync → rename`), пара «файл + side-car» приводится к целевому состоянию через outbox-журнал (см. §3.1).
-- Отсутствующий или повреждённый side-car — inconsistency, восстанавливается `fsck` из БД (или наоборот — БД из side-car при `recover`).
+`flat-storage/` и `meta-storage/` — фиксированные подкаталоги, не конфигурируются. Это упрощает UX (один параметр), гарантирует атомарность `rename` (одна ФС по построению) и убирает класс ошибок misconfig.
+
+**Зачем разделять `flat-storage` и `meta-storage`:**
+- Пользователь может настроить бэкап-инструмент (Time Machine, restic, rsync) на `flat-storage/` — получит чистый архив пользовательских файлов без служебной мешанины. Бэкапы PG лежат отдельно в `meta-storage/backups/`.
+- `meta-storage` скрыт от любых внешних обходов `flat-storage` — не нужен path-фильтр в Storage Driver.
+- Разные дата-объёмы могут эволюционировать раздельно (квоты, retention, GC).
 
 #### 🧩 Storage Abstraction (FileSystem / FileBackend)
 
 Два уровня с разной ответственностью.
 
-**`FileSystem`** — единый фасад над деревом узлов для всех frontend-протоколов (Web API, FTP, FUSE, WebDAV, S3). Реализация одна, поверх `nodes` + side-car + БД. Не знает, как физически хранится содержимое файла.
+**`FileSystem`** — единый фасад над деревом узлов для всех frontend-протоколов (Web API, FTP, FUSE, WebDAV, S3). Реализация одна, поверх `nodes` в БД. Не знает, как физически хранится содержимое файла.
 
 ```go
 type FileSystem interface {
@@ -160,7 +156,7 @@ type FileWriter interface {
     Truncate(size int64) error
     Commit(ctx) error          // финализация: атомарная публикация
     Abort() error              // отмена: чистит staging, не публикует
-    io.Closer                  // = Abort, если Commit не вызывался
+    io.Closer                  // Close без предварительного Commit/Abort вернёт ErrUnfinalized — финализацию надо вызвать явно.
 }
 
 type WriteOpts struct {
@@ -204,11 +200,11 @@ type AllocHint struct {
 
 - **`FlatFile` (MVP):**
     - `Allocate` → возвращает relative path, основанный на `LogicalPath`.
-    - `OpenWrite` → открывает tmpfile в `.storage_meta/uploads/`, `WriteAt` = `pwrite` в tmpfile. На `Commit` — `fsync` + `rename` поверх целевого пути (атомарно в пределах ФС). На `Abort` — `unlink` tmpfile.
+    - `OpenWrite` → открывает tmpfile в `<storage-meta-dir>/uploads/`, `WriteAt` = `pwrite` в tmpfile. На `Commit` — `fsync` + `rename` поверх целевого пути (атомарно в пределах ФС). На `Abort` — `unlink` tmpfile.
     - `OpenRead` → `os.OpenFile`, возвращает обёртку с `ReadAt`.
     - `Delete` → `unlink`.
 
-- **`CDCFile` (отложено, §5):** наброски — `OpenWrite` использует sparse staging tmpfile с lazy fetch чанков и copy-on-write на `WriteAt`; на `Commit` прогоняется FastCDC, чанки в `.storage_meta/blobs/chunks/`, манифест в `.storage_meta/blobs/manifests/<id>.json`. `OpenRead` резолвит `(offset, len)` через таблицу чанков манифеста и делает `pread` по нужному чанку. Random read дешёвый (без сжатия/шифрования на чанк целиком — иначе теряется); см. §5 про trade-offs.
+- **`CDCFile` (отложено, §5):** наброски — `OpenWrite` использует sparse staging tmpfile с lazy fetch чанков и copy-on-write на `WriteAt`; на `Commit` прогоняется FastCDC, чанки в `<storage-meta-dir>/blobs/chunks/`, манифест в `<storage-meta-dir>/blobs/manifests/<id>.json`. `OpenRead` резолвит `(offset, len)` через таблицу чанков манифеста и делает `pread` по нужному чанку. Random read дешёвый (без сжатия/шифрования на чанк целиком — иначе теряется); см. §5 про trade-offs.
 
 **Жизненный цикл записи (через `FileSystem.OpenWrite`):**
 
@@ -218,7 +214,7 @@ type AllocHint struct {
 4. Возвращает `FileWriter` (это writer бэкенда).
 5. Клиент пишет (`WriteAt`/`Truncate`).
 6. Клиент вызывает `Commit` → бэкенд финализирует (для `FlatFile` — rename; для `CDCFile` — chunking + manifest).
-7. FS обновляет side-car + `nodes(status='ready', size, sha256)`, удаляет outbox.
+7. FS обновляет `nodes(status='ready', size, sha256)`, удаляет outbox.
 
 `Abort` или `Close` без `Commit` → бэкенд чистит staging, FS откатывает узел (через outbox).
 
@@ -226,7 +222,7 @@ type AllocHint struct {
 
 - Random write на уровне `FileBackend` — нет. `WriteAt` поддерживается каждым бэкендом по-своему через staging; внешне это просто `FileWriter`.
 - Move/Rename в `FileBackend` — нет. Логическое перемещение в дереве — операция `FileSystem`, не трогает `BackendRef`. Если backend хранит ref в виде пути (как `FlatFile`), то FS вызывает `Delete(old) + Allocate(new) + копирование`, либо backend опционально оптимизирует через native rename (не в интерфейсе, а как метод-расширение).
-- List/Walk — нет. Обход дерева — это БД и side-car.
+- List/Walk — нет. Обход дерева — это БД.
 
 **Привязка бэкенда к файлу:**
 
@@ -239,7 +235,6 @@ type AllocHint struct {
 Выбор PostgreSQL обоснован:
 - Конкурентные writer'ы (Web + FTP + воркеры индексации одновременно).
 - JSONB + GIN для расширяемых метаданных.
-- `tsvector` + FTS для полнотекстового поиска.
 - `ltree` для запросов по дереву (materialized path).
 - Партиционирование истории версий/audit log.
 
@@ -266,7 +261,7 @@ type AllocHint struct {
     ```
     Индексы: gist на `path`, btree на `sha256`, `parent_id`, partial на `deleted_at`.
 
-*   **`node_meta`** — типизированные частые поля + JSONB + FTS.
+*   **`node_meta`** — типизированные частые поля + JSONB.
     ```sql
     node_id      uuid primary key references nodes(id) on delete cascade
     width        int
@@ -276,12 +271,8 @@ type AllocHint struct {
     lng          double precision
     duration_ms  int
     extra        jsonb not null default '{}'
-    search_tsv   tsvector generated always as (
-                   setweight(to_tsvector('simple', coalesce(extra->>'title','')), 'A') ||
-                   setweight(to_tsvector('simple', coalesce(extra->>'description','')), 'B')
-                 ) stored
     ```
-    Индексы: `gin (extra jsonb_path_ops)`, `gin (search_tsv)`, btree на `taken_at`, btree на `(lat, lng)` (PostGIS опционально).
+    Индексы: `gin (extra jsonb_path_ops)`, btree на `taken_at`, btree на `(lat, lng)` (PostGIS опционально).
 
     Принцип: **часто запрашиваемые поля — в типизированные колонки** (можно индексировать, делать range-запросы), **редкие/кастомные — в `extra` JSONB**. Переезд из JSONB в колонку — миграция, когда поле становится горячим.
 
@@ -312,7 +303,6 @@ type AllocHint struct {
     node_id          uuid primary key references nodes(id) on delete cascade
     storage_backend  text                      -- 'flat' | 'cdc' (cdc — §5); определяет бэкенд
                                                -- для НОВЫХ файлов в этой ветке
-    -- зарезервировано под §5: max_versions int, retention_days int, version_policy jsonb
     ```
     Default `storage_backend` (если ни у одного предка не задано) — `'flat'`.
 
@@ -338,17 +328,18 @@ type AllocHint struct {
 #### ⚙️ Индексация: Pipeline Workers
 
 1.  **Trigger:** загрузка через API, перемещение, `fsck`-сканер.
-2.  **Stage 1 (Sync, в транзакции загрузки):** вставка в `nodes` (`size`, `mtime`, `type`), запись side-car, вставка job в `jobs`, коммит.
+2.  **Stage 1 (Sync, в транзакции загрузки):** вставка в `nodes` (`size`, `mtime`, `type`, `backend_kind`, `backend_ref`), вставка job в `jobs`, коммит.
 3.  **Stage 2 (Async):** пул горутин берёт задачи через `SELECT ... FOR UPDATE SKIP LOCKED`.
-    *   *Hasher:* sha256/md5 → `nodes.sha256`, `node_meta`, обновление side-car.
-    *   *ImageProc:* EXIF/Geo/Dimensions → типизированные колонки `node_meta`, side-car.
-    *   *AI:* face recognition → `node_meta.extra`, side-car.
+    *   *Hasher:* sha256/md5 → `nodes.sha256`, `node_meta`.
+    *   *ImageProc:* EXIF/Geo/Dimensions → типизированные колонки `node_meta`.
+    *   *AI:* face recognition → `node_meta.extra`.
 4.  Ошибки → retry с backoff, после N попыток — dead letter и audit event.
 
 #### 🔄 Корзина
 
-*   Файл/папка перемещается в `.storage_meta/trash/<node_uuid>/`, side-car сопровождает данные, создаётся `trash.meta.json` с `original_path`, `deleted_by`, `deleted_at`, `acl_snapshot`. В `nodes` — `status='deleted'`, `deleted_at`. Перемещение для `FlatFile` — `os.Rename`; для будущих бэкендов — через `FileBackend.Delete` + сохранение `BackendRef` в `trash.meta.json` для возможности undelete.
-*   **GC:** фоновый воркер чистит записи старше N дней (настройка retention в config).
+*   Файл/папка перемещается в `<storage-meta-dir>/trash/<node_uuid>/`, рядом записывается **служебный** `trash.meta.json` с `original_path`, `original_parent_id`, `deleted_by`, `deleted_at`, `acl_snapshot`, `backend_kind`, `backend_ref`. Это не side-car юзер-файла, это самодостаточная запись корзины — позволяет восстановить элемент даже без БД.
+*   В `nodes` — `status='deleted'`, `deleted_at`. Перемещение для `FlatFile` — `os.Rename`; для будущих бэкендов — `BackendRef` сохраняется в `trash.meta.json`, физическое содержимое не дублируется.
+*   **GC:** фоновый воркер чистит записи старше N дней (настройка retention в config) — удаляет payload через `FileBackend.Delete` и саму папку.
 *   **Версионирование** — отложено в §5; место под `versions` зарезервировано в `folder_settings`.
 
 #### 🌐 Интерфейсы
@@ -357,13 +348,12 @@ type AllocHint struct {
 *   **FTP:** `github.com/fclairamb/ftpserverlib` с кастомным Driver.
     *   Только **FTPS** (explicit TLS через `AUTH TLS`). Plain FTP отключён.
     *   **Share-links не поддерживаются** — только именованные пользователи.
-    *   Driver фильтрует `.storage_meta/` и `*.meta.json` на всех listing/read/write.
 
 ---
 
 ### 3. Сквозные механизмы
 
-#### 3.1 Атомарность FS ↔ DB (Outbox + Journal)
+#### 3.1 Атомарность FS ↔ DB (Outbox)
 
 Операции затрагивают два независимых хранилища — диск и PostgreSQL. Чистых распределённых транзакций нет, поэтому используем **transactional outbox + идемпотентное доигрывание**.
 
@@ -380,41 +370,41 @@ locked_until timestamptz
 ```
 
 **Порядок операций (на примере загрузки):**
-1. Клиент шлёт данные → Storage Driver пишет во временный файл `.storage_meta/uploads/<upload_id>`, fsync.
-2. Транзакция PostgreSQL: insert `nodes(status='pending')`, insert `outbox(op='create_file', payload={upload_id, target_path, side_car})`.
+1. Клиент шлёт данные → `FileBackend` пишет в staging внутри `<storage-meta-dir>/uploads/<id>`, fsync.
+2. Транзакция PostgreSQL: insert `nodes(status='pending', backend_kind, backend_ref)`, insert `outbox(op='create_file', payload={upload_id, backend_ref})`.
 3. Коммит. С этого момента операция **должна быть доведена до конца**.
-4. Executor (та же горутина или фоновый worker) выполняет:
-   a. Запись `<target>.meta.json.tmp` → fsync → rename.
-   b. Rename `uploads/<upload_id>` → `<target_path>` (в пределах одной ФС, атомарно).
-5. Транзакция: `nodes.status='ready'`, delete из `outbox`.
+4. Executor вызывает `FileWriter.Commit` → бэкенд публикует содержимое (для `FlatFile` — `rename` staging → целевой путь).
+5. Транзакция: `nodes.status='ready'`, обновление `size`/`sha256`, delete из `outbox`.
 
 **Удаление:**
-1. Транзакция: `nodes.status='deleted'`, `deleted_at=now()`, insert outbox `op='trash', payload={disk_path, trash_uuid, acl_snapshot}`.
-2. Executor: move файла + side-car в `.storage_meta/trash/<uuid>/`, создание `trash.meta.json`.
+1. Транзакция: `nodes.status='deleted'`, `deleted_at=now()`, insert outbox `op='trash', payload={node_id, backend_ref, trash_uuid, acl_snapshot}`.
+2. Executor: переносит payload в `<storage-meta-dir>/trash/<uuid>/`, записывает служебный `trash.meta.json`.
 3. Delete из `outbox`.
 
-**Rename/move:** аналогично, outbox описывает целевое состояние.
+**Rename/move:** аналогично, outbox описывает целевое состояние. Для `FlatFile` это `os.Rename` файла + при необходимости перевычисление `backend_ref` в `nodes`.
 
-**Идемпотентность:** каждый executor при старте проверяет текущее состояние диска (что уже перемещено/создано) и доводит до целевого. Повторный запуск безопасен.
+**Идемпотентность:** каждый executor при старте проверяет текущее состояние диска через `FileBackend.Stat` и доводит до целевого. Повторный запуск безопасен.
 
 **Recovery после краша:** при старте процесс читает `outbox where status in ('pending','in_progress')` и доигрывает. Записи старше N минут с истёкшим `locked_until` перехватываются другими инстансами/рестартами.
+
+**Orphan staging files:** если процесс упал до коммита транзакции, в `<storage-meta-dir>/uploads/` может остаться файл без соответствующей записи в `outbox`/`nodes`. Sweeper периодически удаляет `uploads/*` старше TTL без связанной outbox-записи (см. §3.2).
 
 **Sweeper:** фоновая задача периодически сверяет `outbox` с диском, перезапускает зависшие операции, эскалирует `failed` в audit + алерт.
 
 **Атомарность на уровне одного файла:**
 - Запись: `open tmp → write → fsync → rename`. POSIX гарантирует атомарность rename в пределах ФС.
-- Side-car пишется так же. Пара «файл + side-car» не атомарна на уровне ФС, но outbox описывает целевое состояние — `fsck` и executor приводят к нему.
+- Финализация бэкенда (`FileWriter.Commit`) гарантирует либо целевое состояние, либо staging (отменяемое через `Abort`/sweeper). Никакого промежуточного «полузаписанного» файла в целевом дереве не появляется.
 
 #### 3.2 Upload Path
 
 **Web: tus.io** (`github.com/tus/tusd` как embedded handler).
 - Resumable, chunked, стандартизированный протокол.
-- Чанки пишутся в `.storage_meta/uploads/<upload_id>` (а не в целевой путь).
+- Чанки пишутся в `<storage-meta-dir>/uploads/<upload_id>` (а не в целевой путь).
 - По завершении `Upload-Complete` → запускается процедура §3.1 (insert outbox → executor rename).
 - Валидация: `max_size`, MIME по magic bytes (не по заголовку `Content-Type`), проверка квот **до** начала аллокации.
 
 **FTP: STOR.**
-- Driver перенаправляет `STOR` в `.storage_meta/uploads/<random>`.
+- Driver перенаправляет `STOR` в `<storage-meta-dir>/uploads/<random>`.
 - По `TRANSFER COMPLETE` — та же outbox-процедура с rename в целевой путь.
 
 **Общие правила:**
@@ -433,7 +423,6 @@ locked_until timestamptz
     login           citext unique not null
     password_hash   text not null
     totp_secret     bytea           -- шифруется конфиг-ключом
-    is_admin        bool default false
     failed_attempts int default 0
     locked_until    timestamptz
     created_at      timestamptz default now()
@@ -458,7 +447,7 @@ locked_until timestamptz
 
 **2FA (опционально, за флагом в конфиге):**
 - TOTP (`github.com/pquerna/otp/totp`).
-- `totp_secret` шифруется AEAD-ключом из `.storage_meta/config.json`.
+- `totp_secret` шифруется AEAD-ключом из `<storage-meta-dir>/config.json`.
 
 **Политика паролей:**
 - min length 12, проверка по embedded топ-10k утечек (или zxcvbn).
@@ -485,15 +474,47 @@ audit_log (
 ```
 Партиционируется по месяцу, retention настраивается.
 
+#### 3.4 Бэкапы & Disaster Recovery
+
+БД — единственный источник правды для метаданных. DR-стратегия — две линии.
+
+**Линия 1 (основная): периодические `pg_dump`.** Cron внутри процесса (дефолт раз в 24h, конфигурируется через `backup.interval`) запускает `pg_dump --format=custom` в pipe → файл `<storage-meta-dir>/backups/<ISO-ts>.dump`. Custom format уже сжат, поддерживает партикулярный restore через `pg_restore -t <table>`, содержит схему и checksum'ы. Транзакция `pg_dump` — MVCC snapshot, не блокирует writers. Ручной запуск: `storman backup`.
+
+**Линия 2 (последняя): `recover --from-disk`.** Walk по `storage-dir`, создание `nodes` со sha256 и owner-only ACL. Расширенная мета (EXIF, share_links, custom ACL) теряется. Применяется когда нет ни PG, ни дампа.
+
+**Recovery:** `storman recover --from-backup [<path>]` → `pg_restore` указанного дампа (по умолчанию самого свежего из `<storage-meta-dir>/backups/`) в пустую БД, далее fsck-reconcile с диском (см. §4).
+
+**Retention:** дефолт 7 последних `.dump` файлов, старше — удаляются. Конфигурируется через `backup.retention`.
+
+**Конфигурация:**
+```json
+"backup": {
+  "interval": "24h",
+  "retention": 7
+}
+```
+
+**Стоимость:** для 100k файлов — единицы–десятки MB на дамп (custom format уже сжат). Создание — секунды, не блокирует работу сервиса.
+
 ---
 
 ### 4. Критические моменты и рекомендации
 
-1.  **Восстановление БД (`./storman recover`):**
-    *   Walk по диску → для каждого узла читаем side-car → воссоздаём `nodes` (включая `backend_kind`/`backend_ref`), `permissions`, `node_meta`, `folder_settings`.
-    *   `.storage_meta/trash/` восстанавливается из `trash.meta.json`.
-    *   Верификация: пересчёт sha256 (через соответствующий `FileBackend.OpenRead`) и сверка с side-car. Расхождение → warning + quarantine.
-    *   Отсутствующий side-car → warning, узел восстанавливается с owner-only правами, `backend_kind='flat'` и помечается для ручного review.
+1.  **Disaster Recovery (по убыванию полноты, см. §3.4):**
+
+    **`storman recover --from-backup [<path>]`** — `pg_restore` указанного дампа (по умолчанию самого свежего `.dump` из `<storage-meta-dir>/backups/`) в пустую БД. После заливки — fsck-reconcile с диском:
+    *   Для каждой `nodes` row — `FileBackend.Stat(backend_ref)`. Отсутствует на диске → `status='broken'`, audit warning.
+    *   Walk по диску — orphan-файлы (нет ссылки в восстановленной БД) → перемещаются в `<storage-meta-dir>/quarantine/<ts>/` с manifest для ручного review.
+    *   Опционально (`--verify-sha256`): полный пересчёт sha256 для всех файлов и сверка с БД. Дорого, но детектит порчу контента.
+
+    **`storman recover --from-disk`** — последняя линия (нет ни PG, ни дампа). Walk по storage_root, для каждого файла:
+    *   Создаётся `nodes` с `backend_kind='flat'`, `backend_ref`=relative path, sha256 пересчитывается, mime определяется по magic bytes.
+    *   ACL — owner-only для root-пользователя; пользовательские ACL не восстанавливаются.
+    *   `node_meta.extra` — пусто; индексация запускается заново (EXIF, AI и т.п. пересчитываются).
+    *   `share_links`, `folder_settings`, расширенная мета — теряются.
+    *   Узлы помечаются `recovered_from_disk=true` в audit для последующего ручного review.
+
+    **Outbox-recovery после краша процесса** (не DR, штатная процедура §3.1) — отдельно от disaster recovery: читает `outbox` из PG, доигрывает незавершённые операции через соответствующие `FileBackend.Commit`/`Abort`.
 
 2.  **Производительность RBAC:**
     *   `ltree` + gist index даёт O(log n) ancestor/descendant lookup.
@@ -503,11 +524,11 @@ audit_log (
 3.  **Консистентность с внешними изменениями:**
     *   Изменения в обход системы (SSH, rsync) → рассинхрон.
     *   Решение: периодический `fsck`-сканер (cron внутри процесса) + опциональный `fsnotify` watcher.
-    *   Правило разрешения конфликта: **side-car — источник правды** для ACL и meta; если side-car отсутствует у существующего файла — создаётся из БД; если в БД нет записи, а на диске есть файл с side-car — запись создаётся.
+    *   Правило разрешения конфликта: **БД — источник правды** для ACL и meta. Файл на диске без записи в БД → orphan, перемещается в `<storage-meta-dir>/quarantine/` для ручного review. Запись в БД без файла на диске → `status='broken'`, audit warning.
 
 4.  **Безопасность:**
     *   Строгая валидация путей: canonicalize + проверка, что результат внутри `storage_root`, запрет symlink-ов наружу.
-    *   Изоляция `.storage_meta/` и `*.meta.json` — инвариант Storage Driver, через который ходят **все** интерфейсы (Web/FTP/CLI API).
+    *   Изоляция `storage-meta-dir` — обеспечивается физическим разделением каталогов (`flat-storage/` и `meta-storage/` — соседи внутри `data-dir`), Web/FTP/FUSE по построению не видят служебные данные.
     *   OWASP: argon2id, CSRF, rate limiting, HttpOnly cookies, CSP, MIME validation по magic bytes — см. §3.3, §3.2.
     *   TLS обязателен: HTTPS для Web, FTPS для FTP. Plain FTP отключён на уровне listener'а.
 
@@ -523,7 +544,7 @@ audit_log (
 
 **Где включается:** настройка `folder_settings.storage_backend = 'cdc'`. Наследуется потомками. Применяется к **новым** файлам — существующие остаются на своём бэкенде.
 
-**Раскладка на диске** (под `.storage_meta/blobs/`):
+**Раскладка на диске** (под `<storage-meta-dir>/blobs/`):
 - `chunks/<aa>/<bb>/<sha256>` — иммутабельные чанки. Имя = SHA-256 содержимого. Шардирование по первым байтам хеша.
 - `manifests/<manifest_id>.json` — манифест файла: `{ size, chunk_size_target, chunks: [{hash, offset, len}, ...] }`. `manifest_id` = `BackendRef.Data` в `nodes`.
 - `refcounts/<aa>/<bb>/<sha256>` (или PG-таблица `cdc_chunk_refs`) — счётчики ссылок чанков для GC.
@@ -533,7 +554,7 @@ audit_log (
 **`OpenRead`:** читает манифест → строит таблицу `(offset → chunk)` → `ReadAt(off, len)` находит нужный чанк через бинпоиск, открывает блоб, делает `pread(chunk_fd, off_in_chunk, len)`. Кеши: LRU открытых fd чанков, LRU манифестов в памяти.
 
 **`OpenWrite` (Modify-режим, по выбору пользователя — вариант «б»):**
-- Открываем sparse staging tmpfile в `.storage_meta/uploads/<id>` размером с исходный файл, но без копирования содержимого.
+- Открываем sparse staging tmpfile в `<storage-meta-dir>/uploads/<id>` размером с исходный файл, но без копирования содержимого.
 - Поддерживаем in-memory bitmap «какие страницы материализованы».
 - При `ReadAt` (если writer хочет читать) и при первом `WriteAt` в страницу — лениво подтягиваем нужные чанки из blobstore в tmpfile (copy-on-write на уровне страниц).
 - `WriteAt` после материализации = обычный `pwrite` в tmpfile.
@@ -552,7 +573,7 @@ audit_log (
 
 `storman migrate --to=cdc <path>` — фоновая операция:
 1. Walk по поддереву, отбирает файлы с `backend_kind != 'cdc'`.
-2. Для каждого файла: читает через текущий `FileBackend` → пишет через целевой → atomic swap `(backend_kind, backend_ref)` в `nodes` и side-car через outbox → удаляет старое содержимое через старый `FileBackend.Delete`.
+2. Для каждого файла: читает через текущий `FileBackend` → пишет через целевой → atomic swap `(backend_kind, backend_ref)` в `nodes` через outbox → удаляет старое содержимое через старый `FileBackend.Delete`.
 3. Идемпотентно (через outbox); прерывание безопасно, перезапуск возобновляет.
 4. Не блокирует чтения/записи: миграция одного файла atomically переключает его на новый ref.
 
@@ -561,7 +582,7 @@ audit_log (
 Удобно ложится поверх `FileBackend` с иммутабельными ref:
 - Таблица `versions(node_id, version_num, backend_kind, backend_ref, size, sha256, created_by, created_at, meta_snapshot)`.
 - Создание версии = текущие `(backend_kind, backend_ref)` копируются записью в `versions`; новая запись становится текущей в `nodes`.
-- Для `FlatFile` это требует физического копирования старого файла (или линка) под id-based путь в `.storage_meta/versions/<uuid>/v<N>` — ради иммутабельности ref.
+- Для `FlatFile` это требует физического копирования старого файла (или линка) под id-based путь в `<storage-meta-dir>/versions/<uuid>/v<N>` — ради иммутабельности ref.
 - Для `CDCFile` копирование бесплатное: ref манифеста уже иммутабелен, просто сохраняем его в `versions` и продолжаем использовать.
 - `folder_settings.max_versions`, `retention_days`, `version_policy` — добавляются в schema (поля уже зарезервированы).
 - GC версий — фоновый воркер по политике; в `CDCFile` удаление версии = `Delete(BackendRef)` манифеста + декремент refcount чанков.
