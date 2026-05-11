@@ -23,10 +23,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath -ldflags="-s -w" \
         -o /out/storman ./cmd/storman
 
-# Stage 3: minimal runtime. Distroless static is enough — the binary is
-# statically linked (CGO_ENABLED=0) and orchestration (init + migrate + serve)
-# happens inside `storman boot`, so we don't need a shell.
-FROM gcr.io/distroless/static-debian12:nonroot
+# Stage 3: alpine runtime. We need postgresql-client for `storman backup`
+# (pg_dump) and `storman recover` (pg_restore) — see internal/backup. Client
+# major version must match the postgres server in deployments/docker-compose.yml.
+FROM alpine:3.20
+RUN apk add --no-cache postgresql16-client \
+    && addgroup -g 65532 -S nonroot \
+    && adduser -u 65532 -S -G nonroot nonroot
 COPY --from=go-builder /out/storman /usr/local/bin/storman
 USER nonroot
 EXPOSE 8080
