@@ -1,4 +1,4 @@
-# storman
+# STORMAN
 
 Self-hosted, enterprise-grade personal file storage. One Go binary, PostgreSQL — no other external dependencies. Web UI, FTPS, WebDAV, resumable uploads (tus.io), and temporary share-links — all over a single tree, with one ACL and one audit log.
 
@@ -18,17 +18,7 @@ storman is built for a single user or a family on a single host: cloud UX, but c
 
 ### Docker Compose (production-style)
 
-The simplest path is Docker. Detailed instructions, including reverse-proxy + TLS, are in [docs/DEPLOY.md](docs/DEPLOY.md).
-
-```bash
-mkdir storman && cd storman
-# Download docker-compose.yml and .env.example from releases (or from this repo)
-mv .env.example .env && chmod 600 .env
-sed -i.bak "s/__CHANGE_ME__/$(openssl rand -base64 24)/" .env && rm .env.bak
-docker compose up -d
-```
-
-Open `http://<host>:8080/setup` for the first-run wizard (the logs show a one-time setup token).
+See [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ### Local development
 
@@ -46,44 +36,7 @@ After startup:
 
 See `make help` for more.
 
-### From source (without Docker, manual setup)
-
-```bash
-# 1. Build the binary (the UI is embedded into the binary via //go:embed).
-make build
-
-# 2. Run PostgreSQL separately (any way you like). For example:
-docker run -d --name storman-pg \
-  -e POSTGRES_USER=storman -e POSTGRES_PASSWORD=storman -e POSTGRES_DB=storman \
-  -p 5432:5432 postgres:16
-
-# 3. Initialize the data-dir, apply migrations, create the root tree node.
-./bin/storman init      --data-dir=/var/lib/storman
-# Edit /var/lib/storman/config.json — set the DSN.
-./bin/storman migrate   --data-dir=/var/lib/storman
-./bin/storman bootstrap --data-dir=/var/lib/storman
-
-# 4. Create the first user and grant them root permissions.
-./bin/storman useradd   --data-dir=/var/lib/storman --login=admin --password=...
-# (then grant via UI or SQL on `permissions`)
-
-# 5. Start the server.
-./bin/storman serve     --data-dir=/var/lib/storman
-```
-
 ## On-disk layout
-
-A single config parameter — `data_dir`. The layout inside is fixed:
-
-```
-<data-dir>/
-├── config.json           # service settings (DSN, secrets_key, TLS, etc.)
-├── flat-storage/         # user files as-is
-└── meta-storage/
-    ├── trash/            # soft-deleted subtrees (restorable)
-    ├── uploads/          # tus staging
-    └── backups/          # pg_dump archives
-```
 
 See [docs/arch/overview.md](docs/arch/overview.md).
 
@@ -100,22 +53,24 @@ storman recover    from-backup [<path>] | from-disk      DR commands
 storman version                                          version from git
 ```
 
-## Access methods (summary)
+## Access methods
 
-| Surface | URL / port | Auth |
-|---|---|---|
-| Web UI + API | `https://host/` | session cookie + double-submit CSRF |
-| FTPS | `host:2121` (explicit TLS) | login + main password OR app-password |
-| WebDAV | `https://host/dav/` | HTTP Basic + app-password |
-| tus.io | `https://host/api/tus` | session (used by the frontend for large uploads) |
-| share-links | `https://host/share/<token>/` | anonymous (token in URL) |
-
-See [docs/arch/interfaces.md](docs/arch/interfaces.md), [docs/arch/auth.md](docs/arch/auth.md).
+See [docs/arch/interfaces.md](docs/arch/interfaces.md) and [docs/arch/auth.md](docs/arch/auth.md).
 
 ## Architecture and decisions
 
 - **[docs/MISSION.md](docs/MISSION.md)** — purpose, north-star, principles, bets / anti-bets.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — overview + links to subsystem details (`docs/arch/*`).
+- **Subsystem deep-dives** ([docs/arch/](docs/arch/)):
+  - [overview](docs/arch/overview.md) — big picture and disk layout.
+  - [interfaces](docs/arch/interfaces.md) — Web API, FTPS, WebDAV, tus, share-links.
+  - [auth](docs/arch/auth.md) — sessions, CSRF, app-passwords, login security.
+  - [rbac](docs/arch/rbac.md) — permission model, inheritance, share-links.
+  - [storage](docs/arch/storage.md) — `storage.FileSystem`, dbfs, FlatFile.
+  - [database](docs/arch/database.md) — PostgreSQL schema.
+  - [indexing](docs/arch/indexing.md) — async metadata pipeline.
+  - [trash](docs/arch/trash.md) — soft-delete and restore.
+  - [backup-dr](docs/arch/backup-dr.md) — backup and disaster recovery.
 - **[docs/adr/](docs/adr/)** — load-bearing decisions with alternatives and rationale:
   - [ADR-0001](docs/adr/0001-filesystem-boundary.md) — all delivery protocols go through `storage.FileSystem` (the cornerstone invariant).
   - [ADR-0002](docs/adr/0002-outbox-fs-db-atomicity.md) — transactional outbox for FS↔DB atomicity.
@@ -131,7 +86,7 @@ See [docs/arch/interfaces.md](docs/arch/interfaces.md), [docs/arch/auth.md](docs
 
 ## Contributing
 
-Any code that mutates the tree must go through `storage.FileSystem` — this is an invariant ([ADR-0001](docs/adr/0001-filesystem-boundary.md)), not a convention. Direct `os.*` calls against `flat-storage/` or direct SQL against `nodes`/`outbox` that bypasses `dbfs` is a red flag in code review.
+The cornerstone invariant: all tree mutations go through `storage.FileSystem` — see [ADR-0001](docs/adr/0001-filesystem-boundary.md).
 
 Tests: `go test ./...` for unit, `TEST_POSTGRES_DSN=postgres://... go test ./... -p 1` for integration (PG required; `-p 1` is mandatory — the testpg helper drops the schema per test).
 

@@ -187,13 +187,13 @@ docker-build:
 	docker build -t storman:dev .
 
 # docker-up runs the compose stack with the local storman:dev image. Requires
-# .env with POSTGRES_PASSWORD set. Data lands in ./data on the host.
+# deployments/.env with POSTGRES_PASSWORD set. Data lands in deployments/data.
 docker-up:
-	@test -f .env || { echo "missing .env — copy from .env.example"; exit 1; }
-	STORMAN_IMAGE=storman:dev docker compose up -d
+	@test -f deployments/.env || { echo "missing deployments/.env — copy from deployments/.env.example"; exit 1; }
+	STORMAN_IMAGE=storman:dev docker compose -f deployments/docker-compose.yml --env-file deployments/.env up -d
 
 docker-down:
-	docker compose down
+	docker compose -f deployments/docker-compose.yml down
 
 # release-tag prints the (manual) release procedure. CI handles the build &
 # publish on push of a v*.*.* tag.

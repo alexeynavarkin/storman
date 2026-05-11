@@ -3,7 +3,8 @@
 This guide covers running storman on your own server with Docker Compose. The
 stack is two containers: `postgres` (data backend) and `storman` (the
 application binary with the SPA embedded). Storman speaks plain HTTP and
-expects a reverse proxy (caddy, nginx, traefik, …) to terminate TLS.
+expects you to put a reverse proxy in front of it for TLS — any proxy will do
+(nginx, traefik, an L7 load balancer, etc.).
 
 ## Prerequisites
 
@@ -11,23 +12,23 @@ expects a reverse proxy (caddy, nginx, traefik, …) to terminate TLS.
   version` must succeed).
 - A domain name pointing at the host (recommended) or an internal IP for
   LAN-only deployments.
-- A reverse proxy that can terminate TLS. The repository ships an
-  [examples/Caddyfile](../examples/Caddyfile) for Caddy.
 - ~1 GB free disk for the database + however much you want to store.
 
 ## Quick start
 
-Download the three artifacts from the latest [GitHub Release](../../../releases),
-or copy them out of this repo:
+Download the two deployment artifacts from the latest
+[GitHub Release](https://github.com/alexeynavarkin/storman/releases), or copy
+them out of the `deployments/` folder of this repo:
 
 ```bash
 mkdir storman && cd storman
-curl -LO https://github.com/<owner>/storman/releases/latest/download/docker-compose.yml
-curl -LO https://github.com/<owner>/storman/releases/latest/download/.env.example
-mv .env.example .env
+curl -LO https://github.com/alexeynavarkin/storman/releases/latest/download/docker-compose.yml
+curl -LO https://github.com/alexeynavarkin/storman/releases/latest/download/.env.example
+
+cp .env.example .env
 chmod 600 .env
 
-# Generate a strong database password.
+# Generate a strong database password (or edit .env by hand).
 sed -i.bak "s/__CHANGE_ME__/$(openssl rand -base64 24)/" .env && rm .env.bak
 
 # Pull the image and start the stack.
@@ -35,8 +36,12 @@ docker compose pull
 docker compose up -d
 ```
 
-Storman is now listening on `127.0.0.1:8080` (HTTP, localhost only). The first
-startup logs a one-time setup token — copy it before continuing:
+`.env` is the only file you need to fill in. Everything else is wired up from
+those values.
+
+Storman is now listening on `127.0.0.1:8080` (HTTP, localhost only — change
+`STORMAN_BIND` in `.env` if you need otherwise). The first startup logs a
+one-time setup token — copy it before continuing:
 
 ```bash
 docker compose logs storman | grep -A1 "FIRST-RUN SETUP REQUIRED"
@@ -45,7 +50,7 @@ docker compose logs storman | grep -A1 "FIRST-RUN SETUP REQUIRED"
 ## First-run setup (UI wizard)
 
 Open `http://<host>:8080/setup` in a browser (use SSH tunnelling if the host
-isn't local, or finish the reverse-proxy section below and use
+isn't local, or finish your reverse-proxy setup and use
 `https://your-domain/setup`). The wizard asks for:
 
 - **Setup token** — paste the value from the logs above.
@@ -58,27 +63,13 @@ setup, `docker compose restart storman` issues a fresh one.
 ## Reverse proxy (TLS)
 
 Storman never terminates TLS itself in this deployment mode. Point your proxy
-at `127.0.0.1:8080`. The minimum Caddyfile:
+at `127.0.0.1:8080` and forward `X-Forwarded-Proto: https` so storman can mark
+cookies `Secure` (the `STORMAN_TRUST_PROXY=true` env in `docker-compose.yml`
+makes the server honour the header).
 
-```caddyfile
-storman.example.com {
-        encode zstd gzip
-        reverse_proxy 127.0.0.1:8080
-        request_body { max_size 0 }
-}
-```
-
-A complete example with documentation is in
-[examples/Caddyfile](../examples/Caddyfile). Caddy will obtain and renew the TLS
-certificate automatically. Verify after a few seconds that
-`https://storman.example.com` serves the login page — cookies should be marked
-`Secure` (the `STORMAN_TRUST_PROXY=true` env in docker-compose.yml makes the
-server honour `X-Forwarded-Proto`).
-
-For nginx/traefik the proxy contract is the same: forward to `127.0.0.1:8080`
-and ensure `X-Forwarded-Proto` is set to `https`. Do **not** enable
-`STORMAN_TRUST_PROXY` if the storman port is reachable from the public network
-— an attacker could spoof the header.
+Do **not** enable `STORMAN_TRUST_PROXY` if the storman port is reachable from
+the public network — an attacker could spoof the header. The default
+`STORMAN_BIND=127.0.0.1:8080` keeps it local-only.
 
 ## Upgrading
 
@@ -152,7 +143,7 @@ Subsequent restarts ignore them.
   `docker compose run --rm storman useradd --help`) or the server failed
   before reaching setup — check `docker compose logs storman` for migrate /
   Postgres errors.
-- **`Secure` cookies missing behind the proxy.** Verify Caddy/nginx forwards
+- **`Secure` cookies missing behind the proxy.** Verify the proxy forwards
   `X-Forwarded-Proto: https`. Without it `web.trust_proxy_headers` has no
   request to trust.
 - **Postgres healthcheck fails.** Make sure `POSTGRES_PASSWORD` was set

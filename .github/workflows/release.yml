@@ -99,9 +99,8 @@ jobs:
       - name: Stage release assets
         run: |
           mkdir -p release
-          cp docker-compose.yml release/
-          cp .env.example release/
-          cp examples/Caddyfile release/Caddyfile
+          cp deployments/docker-compose.yml release/
+          cp deployments/.env.example release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -110,4 +109,3 @@ jobs:
           files: |
             release/docker-compose.yml
             release/.env.example
-            release/Caddyfile
