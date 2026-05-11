@@ -95,47 +95,182 @@ recovery you also need a copy of:
 
 A typical `restic`/`rsync`/`borg` job on a cron should snapshot both. The
 restore command for the database side is `docker compose run --rm storman
-recover --data-dir=/var/lib/storman --from-dump=<path-to-dump>`.
+recover from-backup --path=<path-to-dump>`.
 
 ## Common operations
 
 All commands run inside an ephemeral container, sharing the same volumes as
 the live service:
 
+All subcommands pick up the config from `/var/lib/storman/config.json` by
+default (the path mounted into the container). Override with `--config=<path>`
+or `STORMAN_CONFIG_PATH=<path>` if you mounted it somewhere else.
+
 ```bash
 # Run a one-off migrate (e.g. before upgrade, although `boot` does it for you).
-docker compose run --rm storman migrate --data-dir=/var/lib/storman
+docker compose run --rm storman migrate
 
 # Create another user from the CLI (not as the first admin — use the wizard
 # for that; this is for regular users).
-docker compose run --rm storman useradd --data-dir=/var/lib/storman --login=bob
+docker compose run --rm storman useradd --login=bob
 
 # Recover from a pg_dump file.
-docker compose run --rm storman recover --data-dir=/var/lib/storman --from-dump=<path>
+docker compose run --rm storman recover from-backup --path=<path>
 ```
 
 ## Configuration
+
+### Environment variables
+
+#### Consumed by the storman binary
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `STORMAN_CONFIG_PATH` | every command | Path to `config.json`. Overridden by `--config=<path>`. Default `/var/lib/storman/config.json`. |
+| `STORMAN_DB_DSN` | `init` / `boot` | Seeds `database.dsn`. |
+| `STORMAN_LISTEN_ADDR` | `init` / `boot` | Seeds `web.listen_addr`. |
+| `STORMAN_TRUST_PROXY` | `init` / `boot` | Seeds `web.trust_proxy_headers` (`true`/`false`). |
+| `STORMAN_SECURE_COOKIES` | `init` / `boot` | Seeds `web.secure_cookies` (`true`/`false`). |
+
+The four seeding variables populate `config.json` **only on first start**.
+After the file exists, the on-disk values are authoritative and these env
+vars are ignored.
+
+#### Consumed by `deployments/docker-compose.yml`
+
+| Variable | Default | Notes |
+|---|---|---|
+| `POSTGRES_DB` | `storman` | Database name. |
+| `POSTGRES_USER` | `storman` | Database user. |
+| `POSTGRES_PASSWORD` | _(required)_ | Set in `.env` before the first `docker compose up`. Once Postgres is initialised, changing this has no effect — the password is baked into the volume. |
+| `STORMAN_IMAGE` | `alexnav/storman:latest` | Image tag. Pin to a specific version in production. |
+| `STORMAN_BIND` | `127.0.0.1:8080` | `host:port` mapping for the storman container's HTTP port. Defaults to localhost so only a local reverse proxy can reach it. |
+
+### `config.json` reference
 
 After the first start, the source of truth for runtime settings is
 `./data/config.json` (owned by the container's `nonroot` user, mode 0600).
 Edit the file and restart storman to apply.
 
-Notable fields:
+JSON does not natively allow comments; the `//` lines below are documentation
+only. Strip them if you copy this structure into a real config file. Every
+field below is shown with its default value.
 
-| Path | Default | Notes |
-|---|---|---|
-| `database.dsn` | from `STORMAN_DB_DSN` on init | Postgres connection string. |
-| `secrets_key` | random base64(32) | DO NOT lose — encrypts TOTP secrets. |
-| `web.listen_addr` | `:8080` | Bound inside the container; the host port is in `.env`. |
-| `web.trust_proxy_headers` | `true` (from `STORMAN_TRUST_PROXY`) | Honour `X-Forwarded-Proto` for cookies. |
-| `web.secure_cookies` | `true` | Emit `Secure` flag when the request is HTTPS. |
-| `backup.interval` | `24h` | `pg_dump` frequency. |
-| `backup.retention` | `7` | Number of dumps to keep. |
-| `trash.retention_days` | `30` | Soft-delete TTL. |
+```jsonc
+{
+  // Absolute path to the data directory. Must equal the directory holding
+  // this file (validated on load — guards against copying the config between
+  // hosts). Written automatically by `storman init`; do not edit by hand.
+  "data_dir": "/var/lib/storman",
 
-Env vars (`STORMAN_DB_DSN`, `STORMAN_LISTEN_ADDR`, `STORMAN_TRUST_PROXY`,
-`STORMAN_SECURE_COOKIES`) seed `config.json` **only on first start**.
-Subsequent restarts ignore them.
+  "database": {
+    // PostgreSQL connection string. Seeded from STORMAN_DB_DSN on init.
+    "dsn": "postgres://storman:storman@localhost:5432/storman?sslmode=disable"
+  },
+
+  // base64-encoded 32-byte key used to encrypt TOTP secrets at rest.
+  // Generated randomly by `storman init`. DO NOT lose this value — without
+  // it, existing TOTP secrets become unreadable.
+  "secrets_key": "<base64(32 bytes)>",
+
+  "backup": {
+    // pg_dump frequency. Use "0s" to disable the scheduled backup loop
+    // (manual `storman backup` still works).
+    "interval": "24h0m0s",
+    // Number of pg_dump archives to keep under meta-storage/backups/.
+    // Older dumps are removed after each successful run. Must be >= 0.
+    "retention": 7,
+    // Optional argv prefix to invoke pg_dump. Default ["pg_dump"] expects
+    // the binary on PATH. For dev setups where PostgreSQL runs in a sibling
+    // container, set e.g. ["docker", "exec", "-i", "storman-pg", "pg_dump"].
+    "pg_dump_cmd": null,
+    // Same as pg_dump_cmd but for pg_restore. Default ["pg_restore"].
+    "pg_restore_cmd": null
+  },
+
+  "web": {
+    // Address the HTTP server binds to inside the container. The host-side
+    // mapping is in deployments/.env (STORMAN_BIND).
+    "listen_addr": ":8080",
+    "tls": {
+      // PEM cert/key for native TLS termination. Leave both empty to serve
+      // plain HTTP behind a reverse proxy (the default deployment). Both
+      // fields must be set together for TLS to activate.
+      "cert_file": "",
+      "key_file": ""
+    },
+    // Emit the Secure attribute on session and CSRF cookies when the
+    // request is HTTPS. Seeded from STORMAN_SECURE_COOKIES on init.
+    "secure_cookies": true,
+    // Honour X-Forwarded-Proto when deciding if a request is HTTPS. Only
+    // safe behind a reverse proxy that strips client-supplied X-Forwarded-*
+    // headers — otherwise an attacker can spoof the protocol. Seeded from
+    // STORMAN_TRUST_PROXY on init.
+    "trust_proxy_headers": false
+  },
+
+  "trash": {
+    // How many days a trashed entry survives before the GC worker purges
+    // it permanently. 0 disables time-based GC (entries stay until an
+    // explicit API purge).
+    "retention_days": 30,
+    // How often the GC worker scans the trash directory. 0 also disables
+    // the worker.
+    "gc_interval": "1h0m0s"
+  },
+
+  "ftp": {
+    // Set true to start the explicit-FTPS listener. AUTH TLS is mandatory;
+    // the server never accepts plain FTP. Reuses web.tls when ftp.tls is
+    // empty.
+    "enabled": false,
+    // Listener for the FTP control channel.
+    "listen_addr": ":2121",
+    // IP/hostname returned in PASV replies. Required when the server is
+    // reachable through NAT/firewall (point it to the externally reachable
+    // address); leave empty for direct LAN access.
+    "public_host": "",
+    // Inclusive port range for PASV data channels. Open this range in the
+    // firewall and (when running in Docker) publish it on the host.
+    "passive_port_min": 50000,
+    "passive_port_max": 50050,
+    // Disconnect clients that idle longer than this (seconds).
+    "idle_timeout_sec": 300,
+    // FTPS-specific cert/key pair. When both fields are empty, the FTPS
+    // listener reuses web.tls.
+    "tls": {
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+
+  "indexing": {
+    // Number of workers in the async indexing pool (MVP: sha256 hashing).
+    "workers": 2,
+    // How often each worker polls the jobs table for new work.
+    "poll_interval": "5s"
+  },
+
+  "tus": {
+    // Sweep tus uploads parked under meta-storage/uploads/<id>/ when older
+    // than this. 0 disables sweeping — orphans live forever (useful for
+    // debugging stuck uploads).
+    "retention_hours": 24,
+    // Sweep cadence. 0 also disables the sweeper.
+    "sweep_interval": "1h0m0s"
+  },
+
+  "webdav": {
+    // Mount the WebDAV endpoint under <path_prefix>/. Auth is HTTP Basic
+    // with an app-password — never enable without TLS in production
+    // (Basic credentials travel in clear).
+    "enabled": false,
+    // URL prefix for the WebDAV interface. Must start with '/' and must
+    // not end with '/'.
+    "path_prefix": "/dav"
+  }
+}
+```
 
 ## Troubleshooting
 
@@ -150,8 +285,8 @@ Subsequent restarts ignore them.
   before the very first `up` — once the database is initialised, Postgres
   remembers the password and changing the env has no effect.
 - **`relation "users" does not exist`.** The migrate step did not run.
-  `docker compose run --rm storman migrate --data-dir=/var/lib/storman` once,
-  then `docker compose up -d storman`.
+  `docker compose run --rm storman migrate` once, then
+  `docker compose up -d storman`.
 
 ## Security checklist
 

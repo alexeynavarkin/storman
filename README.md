@@ -25,7 +25,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md).
 Requirements: Go 1.25+, Node 20+ (for the UI), Docker (for PostgreSQL).
 
 ```bash
-# One shot: PG in a container + provision data-dir + migrations + create dev-user + backend + Vite HMR.
+# One shot: PG in a container + provision the dev data dir + migrations + create dev-user + backend + Vite HMR.
 make dev
 ```
 
@@ -42,13 +42,18 @@ See [docs/arch/overview.md](docs/arch/overview.md).
 
 ## CLI
 
+All commands resolve the config file via `--config=<path>` (highest priority),
+the `STORMAN_CONFIG_PATH` env var, or the default `/var/lib/storman/config.json`.
+The data directory is whatever directory holds the config file — `init` creates
+the layout there on first run.
+
 ```
-storman init       --data-dir=<path>                     create the layout + config.json
-storman migrate    --data-dir=<path>                     apply DB migrations
-storman bootstrap  --data-dir=<path>                     create the root tree node
-storman useradd    --data-dir=<path> --login=X --password=Y
-storman serve      --data-dir=<path>                     run the server
-storman backup     --data-dir=<path>                     manual pg_dump (cron does it automatically)
+storman init                                             create the layout + config.json
+storman migrate                                          apply DB migrations
+storman bootstrap                                        create the root tree node
+storman useradd    --login=X --password=Y
+storman serve                                            run the server
+storman backup                                           manual pg_dump (cron does it automatically)
 storman recover    from-backup [<path>] | from-disk      DR commands
 storman version                                          version from git
 ```
@@ -82,7 +87,7 @@ See [docs/arch/interfaces.md](docs/arch/interfaces.md) and [docs/arch/auth.md](d
 ## Roadmap & risks
 
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — Now (MVP delivered) / Next / Later.
-- **[docs/risks.md](docs/risks.md)** — risk register (durability/security/availability) with mitigations.
+- **[docs/RISKS.md](docs/RISKS.md)** — risk register (durability/security/availability) with mitigations.
 
 ## Contributing
 

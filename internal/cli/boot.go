@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -19,8 +20,7 @@ import (
 // Root-node creation lives inside `serve` (see internal/cli/serve.go), so this
 // command does not call `bootstrap` explicitly — `serve` will create the root
 // node on first start.
-func newBootCmd() *cobra.Command {
-	var dataDir string
+func newBootCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "boot",
 		Short: "Initialize data dir, run migrations, and start the server",
@@ -28,9 +28,8 @@ func newBootCmd() *cobra.Command {
 STORMAN_DB_DSN/STORMAN_LISTEN_ADDR/STORMAN_TRUST_PROXY/STORMAN_SECURE_COOKIES),
 then migrate (idempotent), then serve. Designed for container entrypoints.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
+			path := resolveConfigPath(*configPath)
+			dataDir := filepath.Dir(path)
 
 			cmd.Println("==> init")
 			ov, err := overridesFromEnv()
@@ -47,7 +46,7 @@ then migrate (idempotent), then serve. Designed for container entrypoints.`,
 				cmd.Printf("    %s already initialized\n", dataDir)
 			}
 
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(path)
 			if err != nil {
 				return err
 			}
@@ -67,7 +66,5 @@ then migrate (idempotent), then serve. Designed for container entrypoints.`,
 			return runServe(cmd.Context(), cfg, "")
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }

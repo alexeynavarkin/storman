@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -12,8 +11,7 @@ import (
 	"github.com/alexnav/storman/internal/storage/dbfs"
 )
 
-func newBootstrapCmd() *cobra.Command {
-	var dataDir string
+func newBootstrapCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Create the root node in the database (idempotent)",
@@ -22,10 +20,7 @@ children. Run this once after 'storman migrate', before serving traffic.
 
 Idempotent: safe to re-run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
@@ -49,7 +44,5 @@ Idempotent: safe to re-run.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }

@@ -44,7 +44,7 @@ services:
       - ./data:/var/lib/storman
     ports:
       - "${STORMAN_BIND:-127.0.0.1:8080}:8080"
-    command: ["boot", "--data-dir=/var/lib/storman"]
+    command: ["boot"]
 
 volumes:
   pg_data:

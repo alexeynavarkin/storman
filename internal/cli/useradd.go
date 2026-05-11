@@ -11,13 +11,11 @@ import (
 
 	"github.com/alexnav/storman/internal/auth"
 	"github.com/alexnav/storman/internal/config"
-	"github.com/alexnav/storman/internal/datadir"
 	"github.com/alexnav/storman/internal/db"
 )
 
-func newUserAddCmd() *cobra.Command {
+func newUserAddCmd(configPath *string) *cobra.Command {
 	var (
-		dataDir  string
 		login    string
 		password string
 	)
@@ -27,10 +25,10 @@ func newUserAddCmd() *cobra.Command {
 		Long: `Creates a user with the given login. If --password is not supplied, the
 command reads the password from the terminal (twice, for confirmation).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" || login == "" {
-				return errors.New("--data-dir and --login are required")
+			if login == "" {
+				return errors.New("--login is required")
 			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
@@ -57,10 +55,8 @@ command reads the password from the terminal (twice, for confirmation).`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
 	cmd.Flags().StringVar(&login, "login", "", "login name (case-insensitive)")
 	cmd.Flags().StringVar(&password, "password", "", "password (omit for interactive prompt)")
-	_ = cmd.MarkFlagRequired("data-dir")
 	_ = cmd.MarkFlagRequired("login")
 	return cmd
 }

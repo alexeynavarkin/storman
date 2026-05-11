@@ -118,13 +118,13 @@ stop-pg:
 dev-data: build run-pg
 	@if [ ! -f $(DEV_DATA)/config.json ]; then \
 	  echo "==> initializing $(DEV_DATA)"; \
-	  $(BIN) init --data-dir=$(DEV_DATA); \
+	  $(BIN) init --config=$(DEV_DATA)/config.json; \
 	fi
 	@python3 -c "import json,pathlib; p=pathlib.Path('$(DEV_DATA)/config.json'); c=json.loads(p.read_text()); c.setdefault('web',{})['secure_cookies']=False; p.write_text(json.dumps(c, indent=2)+chr(10))"
-	@$(BIN) migrate --data-dir=$(DEV_DATA)
-	@$(BIN) bootstrap --data-dir=$(DEV_DATA)
+	@$(BIN) migrate --config=$(DEV_DATA)/config.json
+	@$(BIN) bootstrap --config=$(DEV_DATA)/config.json
 	@if ! docker exec $(PG_CONTAINER) psql -U storman -d storman -tAc "SELECT 1 FROM users WHERE login='$(DEV_USER)'" 2>/dev/null | grep -q 1; then \
-	  $(BIN) useradd --data-dir=$(DEV_DATA) --login=$(DEV_USER) --password=$(DEV_PASSWORD); \
+	  $(BIN) useradd --config=$(DEV_DATA)/config.json --login=$(DEV_USER) --password=$(DEV_PASSWORD); \
 	else \
 	  echo "==> user '$(DEV_USER)' already exists"; \
 	fi
@@ -146,7 +146,7 @@ ui/node_modules: ui/package.json ui/package-lock.json
 	@touch ui/node_modules
 
 dev-backend: dev-data
-	$(BIN) serve --data-dir=$(DEV_DATA)
+	$(BIN) serve --config=$(DEV_DATA)/config.json
 
 dev-ui: ui/node_modules
 	cd ui && npm run dev
@@ -163,7 +163,7 @@ dev: dev-data ui/node_modules
 	@echo "    Ctrl+C to stop both processes."
 	@echo ""
 	@trap 'kill 0' EXIT INT TERM; \
-	  $(BIN) serve --data-dir=$(DEV_DATA) & \
+	  $(BIN) serve --config=$(DEV_DATA)/config.json & \
 	  (cd ui && npm run dev) & \
 	  wait
 

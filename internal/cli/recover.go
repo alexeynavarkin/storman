@@ -25,20 +25,17 @@ import (
 	"github.com/alexnav/storman/internal/storage/flat"
 )
 
-func newRecoverCmd() *cobra.Command {
+func newRecoverCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "recover",
 		Short: "Disaster-recovery flows: --from-backup and --from-disk",
 	}
-	cmd.AddCommand(newRecoverFromBackupCmd(), newRecoverFromDiskCmd())
+	cmd.AddCommand(newRecoverFromBackupCmd(configPath), newRecoverFromDiskCmd(configPath))
 	return cmd
 }
 
-func newRecoverFromBackupCmd() *cobra.Command {
-	var (
-		dataDir  string
-		dumpPath string
-	)
+func newRecoverFromBackupCmd(configPath *string) *cobra.Command {
+	var dumpPath string
 	cmd := &cobra.Command{
 		Use:   "from-backup",
 		Short: "Replay a pg_dump archive then fsck-reconcile against the disk",
@@ -48,10 +45,7 @@ restore, walks every file node in the resurrected schema and verifies the
 backend can Stat its content. Missing content is marked status='broken' for
 manual review.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
@@ -79,14 +73,11 @@ manual review.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
 	cmd.Flags().StringVar(&dumpPath, "path", "", "specific .dump file to restore (default: newest in backups/)")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }
 
-func newRecoverFromDiskCmd() *cobra.Command {
-	var dataDir string
+func newRecoverFromDiskCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "from-disk",
 		Short: "Rebuild the node tree by walking flat-storage (last-line DR)",
@@ -99,18 +90,13 @@ would create duplicate nodes. Run 'storman migrate' first to create the
 schema, then this command, then 'storman useradd' to add an admin and grant
 them ACL via the API.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
 			return recoverFromDisk(cmd.Context(), cmd.OutOrStdout(), cfg)
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }
 

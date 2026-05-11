@@ -8,22 +8,25 @@ import (
 )
 
 func NewRoot() *cobra.Command {
+	var configPath string
 	root := &cobra.Command{
 		Use:           "storman",
 		Short:         "Personal file storage server",
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
+	root.PersistentFlags().StringVar(&configPath, "config", "",
+		"path to config.json (overrides $"+EnvConfigPath+"; defaults to "+DefaultConfigPath+")")
 	root.AddCommand(
-		newInitCmd(),
-		newMigrateCmd(),
-		newBootstrapCmd(),
-		newBootCmd(),
-		newUserAddCmd(),
+		newInitCmd(&configPath),
+		newMigrateCmd(&configPath),
+		newBootstrapCmd(&configPath),
+		newBootCmd(&configPath),
+		newUserAddCmd(&configPath),
 		newVersionCmd(),
-		newServeCmd(),
-		newBackupCmd(),
-		newRecoverCmd(),
+		newServeCmd(&configPath),
+		newBackupCmd(&configPath),
+		newRecoverCmd(&configPath),
 	)
 	return root
 }

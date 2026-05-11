@@ -29,28 +29,20 @@ import (
 	"github.com/alexnav/storman/internal/web"
 )
 
-func newServeCmd() *cobra.Command {
-	var (
-		dataDir string
-		uiDir   string
-	)
+func newServeCmd(configPath *string) *cobra.Command {
+	var uiDir string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the storman HTTP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
 			return runServe(cmd.Context(), cfg, uiDir)
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
 	cmd.Flags().StringVar(&uiDir, "ui-dir", "", "directory containing the built SPA (omit for API-only mode; use Vite dev server during development)")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }
 

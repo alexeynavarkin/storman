@@ -13,7 +13,7 @@ An in-process cron in `internal/backup/`:
 - On each tick:
   1. Runs `pg_dump --format=custom <dsn>` via `os.Exec`. Output goes through a pipe → file `<meta-storage>/backups/<ISO-ts>.dump`.
   2. Ring-buffer retention: after a successful dump, files older than the N most recent are removed (`backup.retention`, default 7).
-- Manual run: `storman backup --data-dir=<path>`.
+- Manual run: `storman backup` (resolves config via `--config` / `STORMAN_CONFIG_PATH` / default).
 
 **Custom format** gives:
 - Already compressed (gzip inside, format-specific).
@@ -40,7 +40,7 @@ An in-process cron in `internal/backup/`:
 
 ## Line 2 — `recover --from-disk`
 
-The last line of defence: there is no DB and no recent dump. CLI — `storman recover --from-disk --data-dir=<path>`. Implementation — [internal/cli/recover.go](../../internal/cli/recover.go).
+The last line of defence: there is no DB and no recent dump. CLI — `storman recover from-disk`. Implementation — [internal/cli/recover.go](../../internal/cli/recover.go).
 
 Algorithm:
 

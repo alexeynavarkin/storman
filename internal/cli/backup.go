@@ -1,17 +1,13 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/alexnav/storman/internal/backup"
 	"github.com/alexnav/storman/internal/config"
-	"github.com/alexnav/storman/internal/datadir"
 )
 
-func newBackupCmd() *cobra.Command {
-	var dataDir string
+func newBackupCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
 		Short: "Take a pg_dump snapshot into meta-storage/backups",
@@ -23,10 +19,7 @@ The pg_dump binary must be available — either on PATH or via the
 backup.pg_dump_cmd argv prefix in config.json (useful when PostgreSQL runs
 inside a container).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				return fmt.Errorf("--data-dir is required")
-			}
-			cfg, err := config.Load(datadir.ConfigPath(dataDir))
+			cfg, err := config.Load(resolveConfigPath(*configPath))
 			if err != nil {
 				return err
 			}
@@ -39,7 +32,5 @@ inside a container).`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dataDir, "data-dir", "", "path to the storman data directory")
-	_ = cmd.MarkFlagRequired("data-dir")
 	return cmd
 }
