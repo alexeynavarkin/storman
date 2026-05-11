@@ -10,14 +10,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AuthenticateFTP verifies login + secret against either the main password or
-// any of the user's app_passwords. App passwords exist so 2FA-protected
-// accounts can still hand a long-lived secret to FTP clients that don't
-// support TOTP — see PLAN §3.3. Calls the same brute-force counters as the
-// main login so an attacker can't burn through credentials over FTP.
+// AuthenticateAppPassword verifies login + secret against either the main
+// password or any of the user's app_passwords. App passwords exist so
+// 2FA-protected accounts can still hand a long-lived secret to clients that
+// don't speak TOTP — currently FTPS and WebDAV — see docs/arch/auth.md and
+// ADR-0004. Calls the same brute-force counters as the main login so an
+// attacker can't burn through credentials over a non-web surface.
 //
 // Returns the same error palette as Authenticate.
-func (s *UserService) AuthenticateFTP(ctx context.Context, login, secret string) (User, error) {
+func (s *UserService) AuthenticateAppPassword(ctx context.Context, login, secret string) (User, error) {
 	// First try the main password — same code path as web login.
 	user, err := s.Authenticate(ctx, login, secret)
 	if err == nil {

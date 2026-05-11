@@ -1,0 +1,24 @@
+.git
+.github
+bin
+data
+tls
+*.md
+
+# UI build output (Docker rebuilds it inside the image)
+ui/node_modules
+ui/dist
+
+# Local staged SPA — keep only the placeholder so the embedded directive has
+# a target file when Docker copies the context. The Dockerfile wipes this
+# directory and stages a fresh build before `go build`.
+internal/web/embedded/**
+!internal/web/embedded/placeholder.html
+
+# Local environment / IDE
+.env
+.env.local
+.env.*.local
+.vscode
+.idea
+.DS_Store

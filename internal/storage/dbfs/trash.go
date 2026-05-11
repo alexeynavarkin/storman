@@ -18,7 +18,7 @@ import (
 
 // TrashMetaFile is the per-entry sidecar inside <trash>/<uuid>/. It lets
 // `storman recover --from-disk` rebuild basic trash awareness even without
-// the database — see PLAN §«Корзина».
+// the database — see docs/arch/trash.md.
 const TrashMetaFile = "trash.meta.json"
 
 // trashMeta is the on-disk shape of trash.meta.json. Kept stable so external

@@ -13,7 +13,7 @@ import (
 )
 
 // OpenWrite creates a new file at path (Create mode only in this slice).
-// Lifecycle per PLAN §3.1: tx1 inserts a pending node + outbox row, returns a
+// Lifecycle per ADR-0002 / docs/arch/storage.md: tx1 inserts a pending node + outbox row, returns a
 // FileWriter wrapping the backend's writer. Caller writes content; on Commit
 // the backend publishes the bytes and tx2 marks the node ready + archives the
 // outbox row.

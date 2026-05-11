@@ -28,7 +28,7 @@ func NewHasher(pool *pgxpool.Pool, backends map[string]storage.FileBackend) *Has
 }
 
 // Run is invoked by the pool for one job. Successful runs persist sha256 +
-// upsert the matching node_meta row (mirror — see PLAN §«Индексация»).
+// upsert the matching node_meta row (mirror — see docs/arch/indexing.md).
 func (h *Hasher) Run(ctx context.Context, job *Job) error {
 	kind, ref, status, err := h.loadNode(ctx, job.NodeID)
 	if err != nil {

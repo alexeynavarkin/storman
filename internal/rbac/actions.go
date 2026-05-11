@@ -1,7 +1,7 @@
 // Package rbac owns the action bitmask and the permission service.
 //
-// Action layout in the persisted permissions.actions bit(8) column matches
-// PLAN.md §3:
+// Action layout in the persisted permissions.actions bit(8) column — see
+// docs/arch/rbac.md and ADR-0003:
 //
 //	bit 0 — Read
 //	bit 1 — Write

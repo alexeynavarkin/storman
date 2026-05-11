@@ -15,7 +15,7 @@ import (
 // (parent_id IS NULL and not deleted), the call is a no-op.
 //
 // The root carries a default backend policy of "flat" so new files inherit it
-// unless an intermediate directory overrides backend_kind. See PLAN.md §2.
+// unless an intermediate directory overrides backend_kind. See docs/arch/storage.md.
 func (fs *DBFS) Bootstrap(ctx context.Context) (created bool, err error) {
 	err = pgx.BeginFunc(ctx, fs.pool, func(tx pgx.Tx) error {
 		_, rerr := fs.rootNode(ctx, tx)

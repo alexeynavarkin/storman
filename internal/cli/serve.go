@@ -98,13 +98,30 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 	auditSvc := audit.NewService(pool, nil)
 
 	tlsEnabled := cfg.Web.TLS.Enabled()
-	secureCookies := cfg.Web.SecureCookies && tlsEnabled
-	if cfg.Web.SecureCookies && !tlsEnabled {
-		log.Printf("warning: secure_cookies requested but TLS is not configured — disabling Secure flag for development")
+	if cfg.Web.SecureCookies && !tlsEnabled && !cfg.Web.TrustProxyHeaders {
+		log.Printf("warning: secure_cookies requested but neither TLS nor trust_proxy_headers is configured — Secure flag will only be set on requests arriving over HTTPS")
 	}
 
-	server := web.NewServer(web.Config{SecureCookies: secureCookies}, users, sessions, perms, shares, fs, auditSvc)
+	server := web.NewServer(web.Config{
+		SecureCookies:     cfg.Web.SecureCookies,
+		LocalTLS:          tlsEnabled,
+		TrustProxyHeaders: cfg.Web.TrustProxyHeaders,
+	}, users, sessions, perms, shares, fs, auditSvc)
+	if err := server.InitSetup(ctx); err != nil {
+		return err
+	}
 	server.StartTusSweeper(ctx, cfg.Tus.RetentionHours, time.Duration(cfg.Tus.SweepInterval), nil)
+	if cfg.WebDAV.Enabled {
+		prefix := cfg.WebDAV.PathPrefix
+		if prefix == "" {
+			prefix = "/dav"
+		}
+		server = server.SetDav(true, prefix)
+		if !tlsEnabled {
+			log.Printf("warning: webdav.enabled=true but TLS is not configured — basic credentials will travel in clear")
+		}
+		log.Printf("storman webdav: mounted at %s/", prefix)
+	}
 	switch {
 	case uiDir != "":
 		spa, err := web.SPAFromDir(uiDir)

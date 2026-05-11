@@ -1,4 +1,4 @@
-// Package jobs runs the async indexing pipeline (PLAN §«Индексация»). Jobs
+// Package jobs runs the async indexing pipeline (docs/arch/indexing.md). Jobs
 // are picked from the jobs table with SELECT ... FOR UPDATE SKIP LOCKED, run
 // in-process by per-kind executors, and archived to jobs_history on
 // success or terminal failure.

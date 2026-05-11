@@ -17,7 +17,7 @@ import (
 // ltree containment, and a single op='trash' outbox row is enqueued for the
 // root — the executor (handleTrashRow) physically moves the subtree into
 // <data-dir>/meta-storage/trash/<uuid>/ once the transaction commits. See
-// PLAN.md §3.1 and §«Корзина».
+// ADR-0002 and docs/arch/trash.md.
 //
 // Permission gating happens at the protocol layer on the root only:
 // down-inheritance guarantees that holding Remove on the root implies Remove

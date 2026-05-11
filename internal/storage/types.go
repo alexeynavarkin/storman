@@ -1,7 +1,7 @@
 // Package storage defines the storage abstraction layered above the on-disk
 // data directory: FileSystem (a single facade over the node tree for all
 // frontend protocols) and FileBackend (the storage backend for a single file's
-// content). See PLAN.md §2 "Storage Abstraction".
+// content). See docs/arch/storage.md and ADR-0001.
 package storage
 
 import (

@@ -2,7 +2,7 @@
 // table. It dispatches file content I/O to the appropriate FileBackend (see
 // internal/storage). Tree operations (Stat/List/Mkdir/Rename/Remove) are owned
 // here; content lifecycle (OpenWrite/OpenRead) coordinates with the outbox
-// for atomicity between disk and DB — see PLAN.md §2 and §3.1.
+// for atomicity between disk and DB — see docs/arch/storage.md and ADR-0002.
 package dbfs
 
 import (
@@ -32,7 +32,7 @@ type DBFS struct {
 	pool     *pgxpool.Pool
 	backends map[string]storage.FileBackend
 	// defaultBackendKind is the kind used when no ancestor directory carries
-	// a policy. Defaults to "flat" per PLAN §2.
+	// a policy. Defaults to "flat" per docs/arch/storage.md.
 	defaultBackendKind string
 	// trashDir is <data-dir>/meta-storage/trash; subtrees being soft-deleted
 	// are renamed into trashDir/<trash_uuid>/payload by the trash executor.

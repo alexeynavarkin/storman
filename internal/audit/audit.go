@@ -1,6 +1,6 @@
 // Package audit implements the append-only audit log: every security- or
 // data-relevant action (login, ACL change, upload, delete, …) lands in
-// audit_log so an operator can reconstruct what happened. See PLAN §3.3.
+// audit_log so an operator can reconstruct what happened. See docs/arch/auth.md.
 //
 // The service is intentionally best-effort: Log() never returns an error
 // because callers shouldn't fail a successful business operation just

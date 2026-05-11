@@ -75,8 +75,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.setSessionCookie(w, sess.ID, sess.ExpiresAt)
-	s.setCSRFCookie(w, csrf, sess.ExpiresAt)
+	s.setSessionCookie(w, r, sess.ID, sess.ExpiresAt)
+	s.setCSRFCookie(w, r, csrf, sess.ExpiresAt)
 	admin, _ := s.isRootAdmin(r.Context(), user.ID)
 	s.audit(r.Context(), audit.Event{
 		UserID: &user.ID,
@@ -99,8 +99,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.clearCookie(w, sessionCookieName)
-	s.clearCookie(w, csrfCookieName)
+	s.clearCookie(w, r, sessionCookieName)
+	s.clearCookie(w, r, csrfCookieName)
 	if user != nil {
 		s.audit(r.Context(), audit.Event{
 			UserID: &user.ID,
@@ -126,40 +126,40 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    value,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
-		Secure:   s.Config.SecureCookies,
+		Secure:   s.secureForRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
 // setCSRFCookie issues the CSRF cookie. It must NOT be HttpOnly — JS in the
 // SPA needs to read it to send the X-CSRF-Token header on mutating calls.
-func (s *Server) setCSRFCookie(w http.ResponseWriter, value string, expires time.Time) {
+func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    value,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: false,
-		Secure:   s.Config.SecureCookies,
+		Secure:   s.secureForRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func (s *Server) clearCookie(w http.ResponseWriter, name string) {
+func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request, name string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: name == sessionCookieName,
-		Secure:   s.Config.SecureCookies,
+		Secure:   s.secureForRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

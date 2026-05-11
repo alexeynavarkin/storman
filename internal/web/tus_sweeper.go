@@ -10,7 +10,7 @@ import (
 )
 
 // StartTusSweeper launches the background loop that purges abandoned tus
-// uploads (PLAN §3.2 "Orphan staging files"). An entry is considered
+// uploads (docs/arch/storage.md "Orphan staging files"). An entry is considered
 // abandoned when its info.json mtime is older than retention.
 //
 // retentionHours<=0 or interval<=0 → no-op (the operator opted out).

@@ -25,9 +25,20 @@ type Config struct {
 	FTP        FTPConfig      `json:"ftp"`
 	Indexing   IndexingConfig `json:"indexing"`
 	Tus        TusConfig      `json:"tus"`
+	WebDAV     WebDAVConfig   `json:"webdav"`
 }
 
-// IndexingConfig tunes the async job pool (PLAN §«Индексация»). 0 in either
+// WebDAVConfig controls the WebDAV interface mounted under the main HTTPS
+// server. Auth is HTTP Basic with an app-password (same secret a user would
+// use for FTPS — see auth.UserService.AuthenticateAppPassword). PathPrefix
+// defaults to "/dav" when empty; never serve WebDAV without TLS in production
+// — Basic credentials travel in clear.
+type WebDAVConfig struct {
+	Enabled    bool   `json:"enabled"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+}
+
+// IndexingConfig tunes the async job pool (docs/arch/indexing.md). 0 in either
 // field falls back to package defaults (2 workers / 5s).
 type IndexingConfig struct {
 	Workers      int      `json:"workers"`
@@ -93,6 +104,12 @@ type WebConfig struct {
 	// SecureCookies controls the Secure flag on session/CSRF cookies. Default
 	// true; auto-disable here only for local development over plain HTTP.
 	SecureCookies bool `json:"secure_cookies"`
+	// TrustProxyHeaders enables honouring X-Forwarded-Proto when deciding
+	// whether a request is HTTPS (for the cookie Secure flag). Only safe to
+	// enable when the server is reachable exclusively through a reverse proxy
+	// that strips client-supplied X-Forwarded-* headers — otherwise an
+	// attacker can spoof the protocol. Default false.
+	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 }
 
 type TLSConfig struct {
@@ -158,6 +175,10 @@ func Default(dataDir string) Config {
 		Tus: TusConfig{
 			RetentionHours: 24,
 			SweepInterval:  Duration(1 * time.Hour),
+		},
+		WebDAV: WebDAVConfig{
+			Enabled:    false,
+			PathPrefix: "/dav",
 		},
 	}
 }
@@ -236,6 +257,14 @@ func (c Config) validate(path string) error {
 		}
 		if c.FTP.PassivePortMin <= 0 || c.FTP.PassivePortMax < c.FTP.PassivePortMin {
 			return errors.New("ftp.passive_port_min/max invalid")
+		}
+	}
+	if p := c.WebDAV.PathPrefix; p != "" {
+		if p[0] != '/' {
+			return fmt.Errorf("webdav.path_prefix must start with '/': %q", p)
+		}
+		if len(p) > 1 && p[len(p)-1] == '/' {
+			return fmt.Errorf("webdav.path_prefix must not end with '/': %q", p)
 		}
 	}
 	return nil

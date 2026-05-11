@@ -105,6 +105,17 @@ func (s *UserService) List(ctx context.Context) ([]User, error) {
 	return out, rows.Err()
 }
 
+// Count returns the total number of users. Used by the setup wizard to decide
+// whether the instance still needs its first administrator.
+func (s *UserService) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count users: %w", err)
+	}
+	return n, nil
+}
+
 // FindByID returns the user with the given ID, or ErrNotFound.
 func (s *UserService) FindByID(ctx context.Context, id uuid.UUID) (User, error) {
 	var u User

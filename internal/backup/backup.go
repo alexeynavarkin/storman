@@ -1,5 +1,5 @@
 // Package backup handles PostgreSQL dumps for the storman DR strategy
-// (PLAN §3.4). A dump is a self-contained pg_dump --format=custom archive
+// (docs/arch/backup-dr.md and ADR-0005). A dump is a self-contained pg_dump --format=custom archive
 // landed in <data-dir>/meta-storage/backups/<ISO-ts>.dump. Restore is
 // pg_restore.
 package backup

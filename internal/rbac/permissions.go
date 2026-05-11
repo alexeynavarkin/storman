@@ -18,8 +18,8 @@ var (
 
 // PermissionService manages the permissions table and computes effective
 // permissions on the fly. ACL cache is intentionally absent in this slice —
-// every Effective() call resolves from PostgreSQL. See PLAN.md §2 "Реализация
-// RBAC и Наследования".
+// every Effective() call resolves from PostgreSQL. See docs/arch/rbac.md and
+// ADR-0003 (computed Traverse).
 type PermissionService struct {
 	pool *pgxpool.Pool
 }

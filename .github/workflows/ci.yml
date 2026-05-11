@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: storman
+          POSTGRES_PASSWORD: storman
+          POSTGRES_DB: storman
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U storman -d storman"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build SPA and embed
+        run: make build-ui
+
+      - name: Build Go binary
+        run: make build-go
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        env:
+          TEST_POSTGRES_DSN: postgres://storman:storman@localhost:5432/storman?sslmode=disable
+        # Tests share a single test DB and reset its schema on each Pool() —
+        # serialise packages with -p 1 to avoid clobbering one another.
+        run: go test -p 1 ./...
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: storman:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

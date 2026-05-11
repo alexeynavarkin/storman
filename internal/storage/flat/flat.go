@@ -1,7 +1,7 @@
 // Package flat implements the FlatFile FileBackend: user files are stored
 // on disk as-is, one logical file == one regular file. Writes go through a
 // staging tmp file in meta-storage/uploads/ and are published via fsync+rename
-// on Commit (atomic within the data-dir filesystem). See PLAN.md §2.
+// on Commit (atomic within the data-dir filesystem). See docs/arch/storage.md.
 package flat
 
 import (

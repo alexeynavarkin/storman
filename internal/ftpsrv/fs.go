@@ -3,7 +3,7 @@
 // call through rbac.PermissionService with the per-connection user.
 //
 // Plain FTP is never accepted — the server is configured with mandatory TLS
-// (AUTH TLS / explicit FTPS). See PLAN.md §«Интерфейсы».
+// (AUTH TLS / explicit FTPS). See docs/arch/interfaces.md.
 package ftpsrv
 
 import (

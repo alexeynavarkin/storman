@@ -12,3 +12,10 @@
 # package compiles on a fresh clone before the UI has been built.
 /internal/web/embedded/*
 !/internal/web/embedded/placeholder.html
+
+# Local on-premise stack state (data lives under ./data when running compose).
+/data/
+/tls/
+.env
+.env.local
+.env.*.local

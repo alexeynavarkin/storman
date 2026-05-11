@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// HashParams configures argon2id. Defaults match PLAN §3.3.
+// HashParams configures argon2id. Defaults match docs/arch/auth.md.
 type HashParams struct {
 	MemoryKiB   uint32 // memory cost in KiB
 	Iterations  uint32 // time cost

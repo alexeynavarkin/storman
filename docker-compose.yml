@@ -1,0 +1,51 @@
+# Storman on-premise stack.
+#
+# Run `docker compose up -d` after filling in .env to bring up Postgres and
+# the storman service. The first start prints a one-time setup token to
+# `docker compose logs storman` — open http://<your-host>:8080/setup and use it
+# to create the first administrator account.
+#
+# storman listens on HTTP only; terminate TLS upstream with a reverse proxy
+# (see examples/Caddyfile). STORMAN_BIND defaults to 127.0.0.1 so the port is
+# not exposed to the public network — set it to 0.0.0.0:8080 only if you know
+# what you're doing.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-storman}
+      POSTGRES_USER: ${POSTGRES_USER:-storman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  storman:
+    image: ${STORMAN_IMAGE:-alexnav/storman:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # These env vars are read by `storman init` ONLY when generating a fresh
+      # config.json (first start). After that the on-disk config is the source
+      # of truth — editing the env without touching ./data/config.json has no
+      # effect.
+      STORMAN_DB_DSN: "postgres://${POSTGRES_USER:-storman}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-storman}?sslmode=disable"
+      STORMAN_LISTEN_ADDR: ":8080"
+      STORMAN_TRUST_PROXY: "true"
+      STORMAN_SECURE_COOKIES: "true"
+    volumes:
+      - ./data:/var/lib/storman
+    ports:
+      - "${STORMAN_BIND:-127.0.0.1:8080}:8080"
+    command: ["boot", "--data-dir=/var/lib/storman"]
+
+volumes:
+  pg_data:

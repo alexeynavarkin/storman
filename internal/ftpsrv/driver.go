@@ -22,7 +22,7 @@ type Config struct {
 	PassivePortMin int
 	PassivePortMax int
 	IdleTimeoutSec int
-	// TLSConfig must be non-nil — plain FTP is rejected per PLAN §«Интерфейсы».
+	// TLSConfig must be non-nil — plain FTP is rejected per docs/arch/interfaces.md.
 	TLSConfig *tls.Config
 }
 
@@ -86,7 +86,7 @@ func (d *Driver) AuthUser(cc ftpserver.ClientContext, login, pass string) (ftpse
 	ctx, cancel := context.WithTimeout(context.Background(), 30) // 30s — argon2 needs headroom
 	cancel()
 	_ = ctx
-	user, err := d.users.AuthenticateFTP(context.Background(), login, pass)
+	user, err := d.users.AuthenticateAppPassword(context.Background(), login, pass)
 	if err != nil {
 		if errors.Is(err, auth.ErrPasswordMismatch) ||
 			errors.Is(err, auth.ErrNotFound) ||

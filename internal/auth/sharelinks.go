@@ -15,7 +15,7 @@ import (
 	"github.com/alexnav/storman/internal/rbac"
 )
 
-// ShareLinkService manages the share_links table. Web-only — see PLAN §3.3.
+// ShareLinkService manages the share_links table. Web-only — see docs/arch/rbac.md.
 type ShareLinkService struct {
 	pool  *pgxpool.Pool
 	clock func() time.Time
@@ -40,7 +40,7 @@ type CreateOpts struct {
 // Create issues a new share link. The returned ShareLink.Token is the secret
 // URL value — show it to the operator once and never persist it elsewhere.
 //
-// Admin scope is rejected per PLAN §3.3 — share links must not grant Admin.
+// Admin scope is rejected per docs/arch/rbac.md — share links must not grant Admin.
 func (s *ShareLinkService) Create(ctx context.Context, opts CreateOpts) (ShareLink, error) {
 	if opts.Actions == 0 {
 		return ShareLink{}, errors.New("auth: empty scope")

@@ -1,6 +1,6 @@
 // Package datadir owns the on-disk layout under a storman data directory.
 //
-// Layout (fixed, not configurable — see PLAN.md §2):
+// Layout (fixed, not configurable — see docs/arch/overview.md):
 //
 //	<data-dir>/
 //	  config.json
