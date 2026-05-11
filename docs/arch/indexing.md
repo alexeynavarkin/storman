@@ -1,54 +1,54 @@
 # Async indexing pipeline
 
-Загрузка файла — sync критический путь, обогащение метаданных — async. Это даёт быструю реакцию upload-операции и масштабируется отдельно от Web/FTP-серверов.
+Uploading a file is the sync critical path; metadata enrichment is async. This gives fast responses to the upload operation and scales separately from the Web/FTP servers.
 
-## Архитектура
+## Architecture
 
-Двухэтапная:
+Two-stage:
 
-**Stage 1 — Sync** (внутри загрузочной транзакции):
-- `OpenWrite.Commit` обновляет `nodes(status='ready', size, mtime)`.
-- В той же транзакции — `INSERT INTO jobs (node_id, kind, status) VALUES ($1, 'hash', 'pending')`.
+**Stage 1 — Sync** (inside the upload transaction):
+- `OpenWrite.Commit` updates `nodes(status='ready', size, mtime)`.
+- In the same transaction — `INSERT INTO jobs (node_id, kind, status) VALUES ($1, 'hash', 'pending')`.
 
-**Stage 2 — Async** (отдельный пул горутин):
-- `JobsPool` запускает N воркеров (configurable). Каждый воркер:
-  1. Лизит задачу из `jobs` через `SELECT ... FOR UPDATE SKIP LOCKED WHERE status='pending' AND kind=$1 ORDER BY created_at LIMIT 1`.
-  2. Помечает `status='in_progress'`, `locked_until=now() + LeaseDuration`.
-  3. Вызывает `kind`-specific executor (например, hasher).
-  4. На успехе — архивирует в `jobs_history` (`final_status='done'`).
-  5. На ошибке — increment `attempts`, после `MaxAttempts` (default 5) — архивирует с `final_status='failed'` + audit alert.
+**Stage 2 — Async** (a separate goroutine pool):
+- `JobsPool` starts N workers (configurable). Each worker:
+  1. Leases a job from `jobs` via `SELECT ... FOR UPDATE SKIP LOCKED WHERE status='pending' AND kind=$1 ORDER BY created_at LIMIT 1`.
+  2. Marks `status='in_progress'`, `locked_until=now() + LeaseDuration`.
+  3. Calls the `kind`-specific executor (e.g. hasher).
+  4. On success — archives into `jobs_history` (`final_status='done'`).
+  5. On error — increments `attempts`; after `MaxAttempts` (default 5) — archives with `final_status='failed'` + audit alert.
 
 ## Workers (MVP)
 
-В MVP реализован только один executor — **hasher**:
+In MVP only one executor is implemented — **hasher**:
 
-- Читает контент через `FileBackend.OpenRead`.
-- Считает SHA-256 потоково через `sha256.New()` + `io.Copy`.
-- В одной транзакции: `UPDATE nodes SET sha256 = $1 WHERE id = $2` + `INSERT INTO node_meta (node_id, ...) ON CONFLICT (node_id) DO UPDATE SET ...`.
+- Reads content via `FileBackend.OpenRead`.
+- Computes SHA-256 in a streaming manner via `sha256.New()` + `io.Copy`.
+- In one transaction: `UPDATE nodes SET sha256 = $1 WHERE id = $2` + `INSERT INTO node_meta (node_id, ...) ON CONFLICT (node_id) DO UPDATE SET ...`.
 
-Реализация — [internal/jobs/hasher.go](../../internal/jobs/hasher.go).
+Implementation — [internal/jobs/hasher.go](../../internal/jobs/hasher.go).
 
 ## Roadmap workers
 
-См. [ROADMAP/Next](../../ROADMAP.md):
+See [ROADMAP/Next](../ROADMAP.md):
 
-- **EXIF extractor** — для image/* (через `go-exif` или встроенный парсер). Заполняет типизированные поля `node_meta.width/height/taken_at/lat/lng` + JSONB `extra.exif.*` для редких полей (ISO, focal length, и т.п.).
-- **MIME validator** — определение MIME по magic bytes (`net/http.DetectContentType` или `gabriel-vasile/mimetype`). Уже частично делается на upload, но executor может пересчитывать для recover-узлов где MIME неизвестен.
-- **Face recognition / AI tags** — на будущее.
+- **EXIF extractor** — for `image/*` (via `go-exif` or a built-in parser). Populates the typed fields `node_meta.width/height/taken_at/lat/lng` + JSONB `extra.exif.*` for rare fields (ISO, focal length, etc.).
+- **MIME validator** — MIME detection by magic bytes (`net/http.DetectContentType` or `gabriel-vasile/mimetype`). Already partially done on upload, but an executor can recompute for recovered nodes where MIME is unknown.
+- **Face recognition / AI tags** — for the future.
 
-Новый kind worker'а = новый файл с `Executor` имплементацией + регистрация в `NewPool` в `serve.go`. Изменений в storage/auth/web-слоях не требует.
+A new kind of worker = a new file with an `Executor` implementation + registration in `NewPool` in `serve.go`. No changes in the storage/auth/web layers are required.
 
-## Конкурентность и SKIP LOCKED
+## Concurrency and SKIP LOCKED
 
-`SELECT FOR UPDATE SKIP LOCKED` — стандартный паттерн очереди в PostgreSQL:
+`SELECT FOR UPDATE SKIP LOCKED` is the standard queue pattern in PostgreSQL:
 
-- Несколько воркеров могут одновременно лизить задачи разных строк без блокировки.
-- Если конкурент уже взял строку — `SKIP LOCKED` пропускает её, не ждёт.
-- Падение воркера → `locked_until` истекает → sweeper / следующий воркер подбирает.
+- Multiple workers can lease jobs from different rows concurrently without blocking each other.
+- If a competitor already has a row — `SKIP LOCKED` skips it without waiting.
+- A worker crash → `locked_until` expires → the sweeper / the next worker picks it up.
 
-Это даёт линейное масштабирование числом воркеров без сложного coordination.
+This gives linear scaling with the number of workers without complex coordination.
 
-## Конфиг
+## Config
 
 ```json
 "indexing": {
@@ -57,31 +57,31 @@
 }
 ```
 
-- `workers` — сколько горутин в пуле. Default 2.
-- `poll_interval` — пауза между попытками лизить (когда очередь пустая). Default 5 секунд.
+- `workers` — number of goroutines in the pool. Default 2.
+- `poll_interval` — pause between lease attempts (when the queue is empty). Default 5 seconds.
 
-При активной очереди воркеры берут задачи back-to-back, без `poll_interval`-задержки.
+When the queue is active, workers take jobs back-to-back without the `poll_interval` delay.
 
-## Retry политика
+## Retry policy
 
-- `MaxAttempts = 5` (захардкожено).
-- `LeaseDuration = 5 минут` (захардкожено) — если воркер не отчитался за это время, задача считается зависшей и доступна для перехвата.
-- На каждой неудаче `attempts++`, `last_error` обновляется. После `MaxAttempts` — финальный failed.
+- `MaxAttempts = 5` (hardcoded).
+- `LeaseDuration = 5 minutes` (hardcoded) — if a worker does not report in within this time, the job is considered stuck and may be picked up.
+- On each failure `attempts++`, `last_error` is updated. After `MaxAttempts` — final `failed`.
 
-Backoff между retry — линейный по `attempts` (`poll_interval * attempts`). Не экспоненциальный, чтобы failed-задачи не зависали надолго.
+Backoff between retries is linear in `attempts` (`poll_interval * attempts`). Not exponential, so failed jobs do not linger too long.
 
-## Архивация в `jobs_history`
+## Archiving into `jobs_history`
 
-Терминальные строки (`done` или окончательный `failed`) переезжают в `jobs_history` — append-only партиционированную по месяцу таблицу. См. [database.md § jobs_history](database.md#jobs_history--append-only-архив-завершённых-задач).
+Terminal rows (`done` or final `failed`) move into `jobs_history` — an append-only table partitioned by month. See [database.md § jobs_history](database.md#jobs_history--append-only-archive-of-finished-jobs).
 
-В одной транзакции: `INSERT INTO jobs_history (...) SELECT ... FROM jobs WHERE id = $1; DELETE FROM jobs WHERE id = $1`. Это keeps `jobs` горячей и маленькой; вся история — в партиционированной таблице.
+In one transaction: `INSERT INTO jobs_history (...) SELECT ... FROM jobs WHERE id = $1; DELETE FROM jobs WHERE id = $1`. This keeps `jobs` hot and small; all history is in the partitioned table.
 
-## Atomic enqueue с upload
+## Atomic enqueue with upload
 
-Hash-job вставляется в **той же транзакции**, что и `nodes.status='ready'`:
+The hash job is inserted in **the same transaction** that sets `nodes.status='ready'`:
 
 ```sql
--- внутри FileWriter.Commit
+-- inside FileWriter.Commit
 BEGIN;
 UPDATE nodes SET status='ready', size=$1, mtime=now() WHERE id=$2;
 INSERT INTO outbox_history (...) SELECT ... FROM outbox WHERE id=$3;
@@ -90,11 +90,11 @@ INSERT INTO jobs (node_id, kind, status) VALUES ($2, 'hash', 'pending');
 COMMIT;
 ```
 
-Это значит: **каждый committed файл гарантированно получит hash**. Невозможно состояние «файл `ready`, но `jobs`-записи нет» — это была бы либо abort'нутая транзакция (тогда `status` не `ready`), либо корруппция БД.
+This means: **every committed file is guaranteed to get a hash**. A state "file `ready`, but no `jobs` row" cannot exist — it would either be an aborted transaction (in which case `status` is not `ready`) or DB corruption.
 
-## Реализация
+## Implementation
 
 - [internal/jobs/jobs.go](../../internal/jobs/jobs.go) — `Service` (Enqueue / Lease / Finish / Release).
 - [internal/jobs/pool.go](../../internal/jobs/pool.go) — `Pool` + worker goroutines + retry/release.
 - [internal/jobs/hasher.go](../../internal/jobs/hasher.go) — `Hasher` executor.
-- Запуск в [internal/cli/serve.go](../../internal/cli/serve.go) — `jobs.NewPool(jobSvc, jobs.KindHash, hasher, cfg.Indexing.Workers, ...)`.
+- Launch in [internal/cli/serve.go](../../internal/cli/serve.go) — `jobs.NewPool(jobSvc, jobs.KindHash, hasher, cfg.Indexing.Workers, ...)`.

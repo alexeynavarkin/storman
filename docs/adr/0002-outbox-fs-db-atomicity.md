@@ -1,92 +1,92 @@
 ---
 id: ADR-0002
-title: Transactional outbox для FS↔DB атомарности
+title: Transactional outbox for FS↔DB atomicity
 status: accepted
 date: 2026-05-11
 deciders: alexnav
 ---
 
-# ADR-0002: Transactional outbox для FS↔DB атомарности
+# ADR-0002: Transactional outbox for FS↔DB atomicity
 
 ## Context and problem statement
 
-Каждая мутирующая FS-операция (`OpenWrite.Commit`, `Remove`, `Rename`, миграция между бэкендами) затрагивает два независимых хранилища: PostgreSQL (узлы, мета, ACL) и файловую систему (`flat-storage/`). Между ними нет общих транзакций — process crash, kill -9, power loss или OOM посередине оставляет либо узел в БД без файла на диске, либо файл на диске без узла в БД. Оба исхода нарушают north-star про durability.
+Every mutating FS operation (`OpenWrite.Commit`, `Remove`, `Rename`, migration between backends) touches two independent stores: PostgreSQL (nodes, metadata, ACL) and the filesystem (`flat-storage/`). There are no shared transactions between them — a process crash, kill -9, power loss or OOM in the middle leaves either a node in the DB without a file on disk, or a file on disk without a node in the DB. Both outcomes violate the durability north-star.
 
-Нужен механизм, который **гарантирует**: после возврата `Commit` клиенту либо состояние полностью согласовано, либо процесс восстановления приведёт его к согласованному состоянию (без участия человека).
+We need a mechanism that **guarantees**: after `Commit` returns to the client, either the state is fully consistent, or the recovery process will bring it to a consistent state (without human intervention).
 
 ## Decision drivers
 
-- **No silent data loss** — durability — это north-star.
-- **Atomicity on a single host** — мы не строим cluster, single-host crash recovery — главный сценарий.
-- **Simple to reason about** — code reviewer должен за минуту понять, что произойдёт при крэше.
-- **PostgreSQL — единственная внешняя зависимость** — не хочется тащить Kafka/etcd/RabbitMQ ради coordination.
-- **Independent от внешних транзакционных менеджеров** — нет XA-coordinator в архитектуре.
+- **No silent data loss** — durability is the north-star.
+- **Atomicity on a single host** — we do not build a cluster, single-host crash recovery is the main scenario.
+- **Simple to reason about** — a code reviewer must understand in a minute what happens on a crash.
+- **PostgreSQL is the only external dependency** — we do not want to drag in Kafka/etcd/RabbitMQ just for coordination.
+- **Independent of external transaction managers** — there is no XA coordinator in the architecture.
 
 ## Considered options
 
 ### Option A — Transactional outbox + idempotent re-play (chosen)
 
-Каждая FS-операция:
+Each FS operation:
 
-1. Стадирует контент: `FileBackend` пишет файл в `<meta>/uploads/<id>` (atomic-replaceable staging).
-2. В одной транзакции PostgreSQL:
-   - вставляет/обновляет строку в `nodes` со `status='pending'`;
-   - вставляет строку в таблицу `outbox(op, node_id, payload, status='pending')`.
-3. Коммит. **С этого момента операция должна быть доведена до конца.**
-4. Executor читает outbox row → вызывает соответствующее действие backend'а (`Commit` = `rename` staging → целевой путь для `FlatFile`).
-5. Финальная транзакция: `nodes.status='ready'` + архивация outbox-строки в `outbox_history`.
+1. Stages content: `FileBackend` writes the file into `<meta>/uploads/<id>` (atomic-replaceable staging).
+2. In a single PostgreSQL transaction:
+   - inserts/updates a row in `nodes` with `status='pending'`;
+   - inserts a row into the `outbox(op, node_id, payload, status='pending')` table.
+3. Commit. **From this moment the operation must be driven to completion.**
+4. The executor reads the outbox row → invokes the corresponding backend action (`Commit` = `rename` staging → target path for `FlatFile`).
+5. Final transaction: `nodes.status='ready'` + archiving of the outbox row into `outbox_history`.
 
-**Recovery после краша.** На старте процесс читает `outbox WHERE status IN ('pending', 'in_progress')` и доигрывает. Каждый executor идемпотентен — проверяет текущее состояние через `FileBackend.Stat` и доводит до целевого. Повторный запуск той же outbox-строки безопасен.
+**Crash recovery.** On startup the process reads `outbox WHERE status IN ('pending', 'in_progress')` and replays. Each executor is idempotent — it checks the current state via `FileBackend.Stat` and brings it to the target. Re-running the same outbox row is safe.
 
-**Sweeper.** Фоновая задача перехватывает зависшие операции (истёкший `locked_until`), эскалирует `failed` после исчерпания retry-попыток (архивация с `final_status='failed'` + alert).
+**Sweeper.** A background task picks up stuck operations (expired `locked_until`), escalates `failed` after exhausting retry attempts (archive with `final_status='failed'` + alert).
 
 ### Option B — XA / 2PC distributed transaction
 
-PostgreSQL поддерживает prepared transactions (`PREPARE TRANSACTION`). Можно построить 2PC между БД и кастомным файловым transaction-manager'ом.
+PostgreSQL supports prepared transactions (`PREPARE TRANSACTION`). One could build 2PC between the DB and a custom filesystem transaction manager.
 
-**Минусы:**
-- PostgreSQL 2PC отключён по умолчанию (`max_prepared_transactions = 0`); включение требует тюнинга и накладывает penalty.
-- Нужен собственный transaction-manager для filesystem-side, который сам должен durable хранить prepared state.
-- Crash recovery всё равно требует ручного resolve in-doubt транзакций оператором, либо timeout-based abort с потерей.
-- Сложность роста кратно с числом backend'ов и числом протоколов — каждый должен корректно участвовать в 2PC-протоколе.
+**Downsides:**
+- PostgreSQL 2PC is disabled by default (`max_prepared_transactions = 0`); enabling it requires tuning and incurs a penalty.
+- A custom transaction manager is needed for the filesystem side, which must durably store prepared state itself.
+- Crash recovery still requires the operator to manually resolve in-doubt transactions, or a timeout-based abort with loss.
+- Complexity grows multiplicatively with the number of backends and protocols — each must correctly participate in the 2PC protocol.
 
-### Option C — Write-ahead log в БД, фиксация на диске вторым шагом, без outbox
+### Option C — Write-ahead log in the DB, on-disk fix as a second step, no outbox
 
-Аналог outbox, но без явной таблицы — состояние выводится из `nodes.status='pending'` + heartbeat'ов. На recovery walk'ом по `nodes WHERE status='pending'`.
+An analogue of outbox without an explicit table — the state is derived from `nodes.status='pending'` + heartbeats. Recovery is a walk over `nodes WHERE status='pending'`.
 
-**Минусы:**
-- Pending-state не несёт payload (upload_id, target_ref, acl_snapshot и т.п.) — придётся прятать в `nodes` или дублировать в `node_meta`. Семантическая путаница: `nodes` начинает описывать одновременно прошлое и намерение.
-- Сложно расширить на операции, не привязанные жёстко к одному узлу (massive trash, ACL ребалансировка) — нет места куда положить payload.
+**Downsides:**
+- A pending state carries no payload (upload_id, target_ref, acl_snapshot, etc.) — it would have to be hidden inside `nodes` or duplicated in `node_meta`. Semantic confusion: `nodes` ends up describing both the past and the intent.
+- Hard to extend to operations not tightly tied to a single node (mass trash, ACL rebalancing) — there is no place to put the payload.
 
 ## Decision outcome
 
 **Chosen: Option A — transactional outbox + idempotent re-play.**
 
-Обоснование:
-- Один файл — `internal/storage/dbfs/outbox.go` — реализует механизм. Это compact и testable.
-- `outbox`-таблица — горячая, маленькая. Идёт в `outbox_history` (партиционированная по месяцу) после завершения. Чтения дешёвые.
-- Crash recovery полностью автоматический, без ручного вмешательства — `fs.RecoverPending` вызывается в `serve.go` при старте, отрабатывает за секунды.
-- Минимум зависимостей: PostgreSQL, который у нас и так есть.
+Rationale:
+- A single file — `internal/storage/dbfs/outbox.go` — implements the mechanism. That is compact and testable.
+- The `outbox` table is hot and small. It moves into `outbox_history` (partitioned by month) after completion. Reads are cheap.
+- Crash recovery is fully automatic, no manual intervention — `fs.RecoverPending` is called in `serve.go` at startup and runs in seconds.
+- Minimum dependencies: PostgreSQL, which we have anyway.
 
 ## Consequences
 
 ### Positive
-- Никаких prepared transactions, никаких внешних coordinator'ов.
-- Каждая операция полностью описана `(op, payload)` — отлично читается, отлично тестируется, удобно сериализовать в audit.
-- Идемпотентность даёт безопасный retry без боязни ускорить «уже сделано».
-- Расширяемость на новые ops тривиальна — новый код executor'а + новая variant payload'а.
-- Поведение под нагрузкой предсказуемо: outbox = очередь, queue-depth measurable, slow operations видно сразу.
+- No prepared transactions, no external coordinators.
+- Every operation is fully described by `(op, payload)` — reads well, tests well, serializes neatly into audit.
+- Idempotency makes safe retries possible without fear of "doing it twice".
+- Adding a new op is trivial — a new executor + a new payload variant.
+- Behaviour under load is predictable: the outbox is a queue, queue depth is measurable, slow operations become visible immediately.
 
 ### Negative
-- Каждая мутация — две транзакции вместо одной (commit-stage + finalize). На SSD это микросекунды; на сетевом хранилище может быть заметно, но storman single-host.
-- Sweeper и executor logic — нетривиальный код. Если поломается, deferred операции просто застрянут — нужны метрики «глубина outbox» и алерты.
-- Партиции `outbox_history` нужно создавать cron'ом наперёд (см. ROADMAP/Next) — забыли создать → новые записи поедут в default-партицию и могут отказать.
+- Each mutation is two transactions instead of one (commit-stage + finalize). On SSD this is microseconds; on networked storage it might be noticeable, but storman is single-host.
+- Sweeper and executor logic is non-trivial code. If it breaks, deferred operations simply get stuck — metrics on outbox depth and alerts are required.
+- `outbox_history` partitions need to be created ahead of time by cron (see ROADMAP/Next) — forget to create them → new rows fall into the default partition and may fail.
 
 ### Neutral
-- `outbox` — таблица. Это OK; альтернативы (Redis/Kafka) добавили бы внешнюю зависимость без выигрыша на single-host scale.
+- `outbox` is a table. That is fine; alternatives (Redis/Kafka) would have added an external dependency for no win at single-host scale.
 
 ## Related
 
 - Implementation: [internal/storage/dbfs/outbox.go](../../internal/storage/dbfs/outbox.go), [internal/storage/dbfs/recover.go](../../internal/storage/dbfs/recover.go), [internal/storage/dbfs/trash.go](../../internal/storage/dbfs/trash.go).
 - Architecture: [docs/arch/storage.md](../arch/storage.md).
-- Зависит от [ADR-0001 FileSystem boundary](0001-filesystem-boundary.md) — outbox-инвариант держится только если все мутации идут через `dbfs`.
+- Depends on [ADR-0001 FileSystem boundary](0001-filesystem-boundary.md) — the outbox invariant only holds if all mutations go through `dbfs`.

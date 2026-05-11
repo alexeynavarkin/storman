@@ -1,82 +1,82 @@
 ---
 id: ADR-0001
-title: Все delivery-протоколы работают только через storage.FileSystem
+title: All delivery protocols work only through storage.FileSystem
 status: accepted
 date: 2026-05-11
 deciders: alexnav
 ---
 
-# ADR-0001: Все delivery-протоколы работают только через `storage.FileSystem`
+# ADR-0001: All delivery protocols work only through `storage.FileSystem`
 
 ## Context and problem statement
 
-В storman пять delivery-интерфейсов (Web API, FTPS, WebDAV, tus.io, share-links) и в roadmap'е ещё несколько (FUSE, S3-compat). Каждый — отдельный пакет под `internal/`. Все они мутируют одно и то же состояние: дерево узлов в PostgreSQL и файлы на диске под `flat-storage/`.
+storman has five delivery interfaces (Web API, FTPS, WebDAV, tus.io, share-links) and several more on the roadmap (FUSE, S3-compat). Each one is a separate package under `internal/`. All of them mutate the same state: the node tree in PostgreSQL and files on disk under `flat-storage/`.
 
-Эти два хранилища не имеют общих транзакций. Атомарность поддерживается через outbox-паттерн ([ADR-0002](0002-outbox-fs-db-atomicity.md)), а целостность инвариантов (ACL проверена перед изменением, корзина — единая логическая операция, индексационный hash-job стоит в одной транзакции с публикацией файла, аудит выпускается ровно вокруг мутации) — через единый shim над этими хранилищами. Этот shim — пакет `internal/storage/dbfs/`, реализующий интерфейс `storage.FileSystem`.
+These two stores have no shared transactions. Atomicity is provided by the outbox pattern ([ADR-0002](0002-outbox-fs-db-atomicity.md)), and the integrity of invariants (ACL checked before mutation, trash as a single logical operation, the indexing hash-job sitting in the same transaction as publishing the file, audit emitted exactly around the mutation) — by a single shim over those stores. That shim is the `internal/storage/dbfs/` package, which implements the `storage.FileSystem` interface.
 
-Вопрос: должны ли delivery-протоколы строго ходить только через этот интерфейс, или допустимы «обходные пути» (прямые `os.*` вызовы против `flat-storage/`, прямой SQL против `nodes`/`outbox`, прямое использование `FileBackend`) ради производительности отдельных операций?
+Question: must delivery protocols strictly go only through this interface, or are "shortcuts" allowed (direct `os.*` calls against `flat-storage/`, direct SQL against `nodes`/`outbox`, direct use of `FileBackend`) for the sake of individual operations' performance?
 
 ## Decision drivers
 
-- **Durability** — корруппция/потеря файлов невозможна (north-star из MISSION). DB ↔ disk разрыв ломает это требование.
-- **Безопасность** — ACL проверяется на каждой операции; обходной путь — это путь, где проверку легко забыть.
-- **Аудит-полнота** — каждая мутация должна оставлять запись. Бэкдор-путь = silent mutation.
-- **Single source of truth** — индексация (hash-job), корзина, recovery-механизмы построены на предположении, что любая мутация проходит через одну точку. Параллельный путь рушит это предположение.
-- **Когнитивная нагрузка** — N протоколов × 5 пересекающихся инвариантов = N×5 мест где можно что-то забыть. Один shim сокращает до 1×5 = 5 проверок в коде ревью.
-- **Скорость отдельных операций** — обходной путь иногда быстрее (native COPY через `os.Link` vs read+write через `OpenFile`).
+- **Durability** — corruption / loss of files is impossible (north-star from MISSION). A DB ↔ disk split breaks that requirement.
+- **Security** — ACL is checked on every operation; a shortcut is a path where the check is easy to forget.
+- **Audit completeness** — every mutation must leave a record. A backdoor path = silent mutation.
+- **Single source of truth** — indexing (hash-job), trash, recovery are built on the assumption that any mutation goes through one place. A parallel path breaks that assumption.
+- **Cognitive load** — N protocols × 5 overlapping invariants = N×5 places where something can be forgotten. One shim reduces it to 1×5 = 5 checks in code review.
+- **Speed of individual operations** — a shortcut is sometimes faster (native COPY via `os.Link` vs read+write via `OpenFile`).
 
 ## Considered options
 
 ### Option A — strict invariant (chosen)
-Все delivery-протоколы используют **только** интерфейс `storage.FileSystem`. Ни один handler протокола не имеет права:
-- звать non-interface методы `dbfs.DBFS` ради оптимизации;
-- импортировать конкретный `FileBackend` (`flat`, будущий `cdc`) и работать с ним напрямую;
-- делать `os.*` против `flat-storage/` или `INSERT/UPDATE` против `nodes` / `outbox` мимо `dbfs`.
+All delivery protocols use **only** the `storage.FileSystem` interface. No protocol handler may:
+- call non-interface methods on `dbfs.DBFS` for optimization;
+- import a concrete `FileBackend` (`flat`, future `cdc`) and work with it directly;
+- do `os.*` against `flat-storage/` or `INSERT/UPDATE` against `nodes` / `outbox` bypassing `dbfs`.
 
-Расширение функционала (например, native COPY поддерева, server-side dedup, fast move между бэкендами) — через **добавление метода в `FileSystem`** и реализацию в `dbfs` одной транзакцией + соответствующей операцией на `FileBackend`. HTTP-handler может перехватывать запрос **до** библиотеки протокола (`webdav.Handler`) ради корректного диспатча в новый `FileSystem`-метод — но не для прямой работы с диском или БД.
+Functional extensions (e.g. native subtree COPY, server-side dedup, fast move between backends) — by **adding a method to `FileSystem`** and implementing it in `dbfs` in a single transaction + a corresponding operation on `FileBackend`. An HTTP handler may intercept a request **before** the protocol library (`webdav.Handler`) so it can dispatch correctly into the new `FileSystem` method — but not for direct disk or DB work.
 
-Исключение: `dbfs` экспонирует non-interface методы для админских/служебных задач (`ListTrash`, `Restore`, `Purge`, `RecoverPending`, `StartGC`, `ImportPath`). Они допустимы для админских и recovery-фич, которые интерфейс `FileSystem` не моделирует by design. Это всё ещё ходит через `dbfs` — не мимо.
+Exception: `dbfs` exposes non-interface methods for admin/service tasks (`ListTrash`, `Restore`, `Purge`, `RecoverPending`, `StartGC`, `ImportPath`). They are allowed for admin and recovery features that `FileSystem` does not model by design. This still goes through `dbfs` — not around it.
 
-### Option B — convention-based, не enforced
-То же что A, но описано как «best practice». Допускаются обходные пути с обещанием инкапсулировать их в один helper, который потом всё-таки разделит общую инфраструктуру (audit, ACL).
+### Option B — convention-based, not enforced
+Same as A, but described as "best practice". Shortcuts are allowed with a promise to encapsulate them in one helper that will eventually share the common infrastructure (audit, ACL).
 
-### Option C — laissez-faire, оптимизация по месту
-Каждый протокол волен выбирать. Storage слой документирует «правильные» пути; протокол может срезать угол если профайл показывает, что критично.
+### Option C — laissez-faire, optimize on the spot
+Each protocol chooses for itself. The storage layer documents the "right" paths; a protocol may cut a corner if profiling shows it is critical.
 
 ## Decision outcome
 
 **Chosen: Option A.**
 
-Обоснование:
-- Целевой класс задач — durable файловое хранилище. Самое страшное, что может случиться — silent data loss или silent ACL bypass. Strict boundary = single place to enforce.
-- N=5 delivery-интерфейсов уже большой надувной фактор. Любая convention without enforcement (Option B) в коде ревью со временем размывается — один rushed PR, и инвариант сломан без следов.
-- Стоимость strict invariant — операции, требующие native fast path, делаются через расширение интерфейса. Это **больше работы один раз**, но получаемая фича становится использумой всеми протоколами сразу (e.g. native COPY доступен и WebDAV, и Web API, и любому будущему S3-фасаду).
-- Performance penalty наблюдаем — WebDAV COPY реально медленный (см. ROADMAP/Next про `FileSystem.Copy`). Но это **управляемая** проблема: добавляем метод, реализуем один раз — и фикс распространяется.
+Rationale:
+- The target class of work is durable file storage. The worst thing that can happen is silent data loss or silent ACL bypass. A strict boundary = a single place to enforce.
+- N=5 delivery interfaces is already a large fan-out. Any convention without enforcement (Option B) erodes in code review over time — one rushed PR, and the invariant is broken without a trace.
+- The cost of a strict invariant is that operations needing a native fast path must come via interface extension. This is **more work once**, but the feature becomes available to all protocols at once (e.g. native COPY is available to WebDAV, Web API, and any future S3 facade).
+- The performance penalty is observable — WebDAV COPY really is slow (see ROADMAP/Next about `FileSystem.Copy`). But this is a **manageable** problem: add the method, implement it once — and the fix propagates.
 
 ## Consequences
 
 ### Positive
-- Один контрольный шов для durability, ACL, audit, indexing, корзины.
-- Тестируемость: тесты FS пишутся один раз, валидны для всех протоколов.
-- Новый протокол подключается как тонкий адаптер, не пересоздавая инфраструктуру.
-- Code review предсказуем: «протокол-handler импортирует `internal/storage/flat`» — автоматический red flag.
+- A single control seam for durability, ACL, audit, indexing, trash.
+- Testability: FS tests are written once, valid for all protocols.
+- A new protocol plugs in as a thin adapter without recreating infrastructure.
+- Code review is predictable: "the protocol handler imports `internal/storage/flat`" — an automatic red flag.
 
 ### Negative
-- Native быстрые пути требуют расширения интерфейса — heavier change than ad-hoc handler optimization.
-- Некоторые операции library-side декомпозируются на много мелких `FileSystem`-вызовов (WebDAV COPY — N транзакций для дерева из N файлов; см. ROADMAP/Next).
-- Иногда возникает соблазн «обойти разок» — нужна дисциплина в код-ревью.
+- Native fast paths require an interface extension — a heavier change than ad-hoc handler optimization.
+- Some library-side operations decompose into many small `FileSystem` calls (WebDAV COPY — N transactions for a tree of N files; see ROADMAP/Next).
+- The temptation to "bypass just once" comes up sometimes — discipline in code review is required.
 
 ### Neutral
-- `dbfs` обрастает non-interface методами (`ListTrash`, `RecoverPending`, etc.) — приемлемо пока они закрывают админские/recovery use-case'ы, которые в основном interface не моделирует by design.
-- Часть оптимизаций (CDC native dedup, native COPY между бэкендами) откладывается до того момента, когда мы готовы расширить интерфейс «правильно», а не быстро.
+- `dbfs` grows non-interface methods (`ListTrash`, `RecoverPending`, etc.) — acceptable as long as they cover admin/recovery use-cases that the main interface does not model by design.
+- Some optimizations (CDC native dedup, native COPY between backends) are deferred until we are ready to extend the interface "the right way" rather than the fast way.
 
 ## Validation
 
-Признаки нарушения, которые ловятся в код-ревью:
+Violations caught in code review:
 
-- Handler протокола (`internal/web/`, `internal/ftpsrv/`, …) импортирует `internal/storage/flat` или другой backend.
-- Handler делает `tx.Exec("INSERT INTO nodes …")` или `tx.Exec("INSERT INTO outbox …")` мимо `dbfs`.
-- Handler делает `os.Open` / `os.Create` / `os.Rename` относительно путей внутри `flat-storage/`.
-- Появилась функция, принимающая одновременно `*pgxpool.Pool` и filesystem-путь — почти всегда обходной путь.
+- A protocol handler (`internal/web/`, `internal/ftpsrv/`, …) imports `internal/storage/flat` or another backend.
+- A handler does `tx.Exec("INSERT INTO nodes …")` or `tx.Exec("INSERT INTO outbox …")` bypassing `dbfs`.
+- A handler does `os.Open` / `os.Create` / `os.Rename` against paths inside `flat-storage/`.
+- A function appears that takes both a `*pgxpool.Pool` and a filesystem path — almost always a shortcut.
 
-Принцип «как добавлять оптимизации»: расширять интерфейс, не обходить его. Если расширение слишком инвазивное — это сигнал, что либо оптимизация не настолько важна, либо `FileSystem` пора пересматривать.
+Principle of "how to add optimizations": extend the interface, do not bypass it. If the extension is too invasive — that is a signal either that the optimization is not that important, or that `FileSystem` is due for a revisit.

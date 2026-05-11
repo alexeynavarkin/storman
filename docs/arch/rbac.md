@@ -1,102 +1,102 @@
-# RBAC: модель прав, наследование, share-links
+# RBAC: permission model, inheritance, share-links
 
-storman использует ACL-модель `User → Resource → Action`, где Resource — узел в дереве (`nodes`), а Action — битмаска. Полное обоснование «computed Traverse» — [ADR-0003](../adr/0003-rbac-computed-traverse.md).
+storman uses an ACL model `User → Resource → Action`, where Resource is a node in the tree (`nodes`) and Action is a bitmask. Full rationale for "computed Traverse" — [ADR-0003](../adr/0003-rbac-computed-traverse.md).
 
-## Биты actions
+## Action bits
 
 ```go
 const (
     Read     = 1 << 0   // bit 0 — read content / list directory
     Write    = 1 << 1   // bit 1 — create / write / mkdir
     Remove   = 1 << 2   // bit 2 — trash / purge
-    Admin    = 1 << 3   // bit 3 — ACL changes, node_settings, backend_kind смены политики
-    Traverse = 1 << 4   // bit 4 — computed (см. ниже), never stored in DB
+    Admin    = 1 << 3   // bit 3 — ACL changes, node_settings, backend_kind policy changes
+    Traverse = 1 << 4   // bit 4 — computed (see below), never stored in DB
 )
 ```
 
-В БД (`permissions.actions bit(8)`) — биты 0-3, биты 4-7 зарезервированы. `Traverse` живёт **только в коде** (`internal/rbac/`), вычисляется на лету.
+In the DB (`permissions.actions bit(8)`) — bits 0-3, bits 4-7 are reserved. `Traverse` lives **only in code** (`internal/rbac/`) and is computed on the fly.
 
-## Хранение прав
+## Storage of permissions
 
-Таблица [`permissions`](database.md#permissions--только-явные-права-rbac):
+Table [`permissions`](database.md#permissions--explicit-grants-only-rbac):
 
 ```sql
 permissions(id, node_id, user_id, actions bit(8), created_at)
 unique (node_id, user_id)
 ```
 
-Хранятся **только явно выданные** права. Никаких `is_explicit`/`auto_granted` флагов, никаких виртуальных записей в персистентном состоянии.
+We store **only explicit grants**. No `is_explicit`/`auto_granted` flags, no virtual rows in persisted state.
 
-## Эффективные права для (user, node)
+## Effective permissions for (user, node)
 
-`rbac.PermissionService.Effective(ctx, userID, nodeID) → Mask` работает так:
+`rbac.PermissionService.Effective(ctx, userID, nodeID) → Mask` works like this:
 
-1. **Проверить ACL Cache.** LRU + epoch-based invalidation per subtree. Хит → возвращаем.
-2. **Down inheritance.** По `nodes.path` (ltree) находится цепочка предков. Берётся ближайший предок (или сам node), где есть явная запись в `permissions` для этого user. Это даёт effective `Read | Write | Remove | Admin`.
-3. **Up traverse.** Если на каком-либо **потомке** узла `N` у user есть явное право — добавляется виртуальный `Traverse` к эффективной маске для `N`:
+1. **Check the ACL Cache.** LRU + epoch-based invalidation per subtree. Hit → return.
+2. **Down inheritance.** Using `nodes.path` (ltree), find the ancestor chain. Take the nearest ancestor (or the node itself) that has an explicit row in `permissions` for this user. This yields effective `Read | Write | Remove | Admin`.
+3. **Up traverse.** If the user has an explicit grant on any **descendant** of node `N` — add a virtual `Traverse` to the effective mask for `N`:
    ```sql
    SELECT EXISTS (
        SELECT 1 FROM permissions p JOIN nodes n ON n.id = p.node_id
        WHERE p.user_id = $1 AND n.path <@ $2
    )
    ```
-   `<@` — ltree-оператор «потомок-или-сам», использует gist-индекс на `nodes.path`.
-4. **Заполнить кэш** результатом и вернуть.
+   `<@` is the ltree "descendant-or-self" operator, using the gist index on `nodes.path`.
+4. **Populate the cache** with the result and return.
 
-`Check(ctx, userID, nodeID, want)` — оборачивает `Effective`, возвращает `rbac.ErrDenied` если `!Has(mask, want)`.
+`Check(ctx, userID, nodeID, want)` wraps `Effective`, returning `rbac.ErrDenied` if `!Has(mask, want)`.
 
-## Инвалидация кэша
+## Cache invalidation
 
-- **Изменение `permissions`** (grant/revoke на узел) → инвалидируется поддерево `path <@ префикс`.
-- **Перемещение/удаление узла** → инвалидируется поддерево.
-- **Epoch-based:** на каждое изменение инкрементируется «эпоха» префикса; записи старой эпохи отбрасываются lazily при чтении. Без явного обхода кэша — это O(1) на mutation.
+- **A change in `permissions`** (grant/revoke on a node) → invalidates the subtree `path <@ prefix`.
+- **A node move/delete** → invalidates the subtree.
+- **Epoch-based:** every change bumps the "epoch" of the prefix; cached entries with an older epoch are discarded lazily on read. No explicit cache walk — O(1) per mutation.
 
-## Admin-операции
+## Admin operations
 
-Бит `Admin` в effective permissions требуется для:
+The `Admin` bit in effective permissions is required for:
 
-- Изменения `permissions` (grant/revoke).
-- Изменения `node_settings`.
-- Изменения `nodes.backend_kind` на папке (смена политики бэкенда).
-- Просмотра корзины (`/api/trash`) — только root-admin (пользователь с `Admin` на корне).
-- Просмотра audit log (`/api/audit`) — только root-admin.
+- Changing `permissions` (grant/revoke).
+- Changing `node_settings`.
+- Changing `nodes.backend_kind` on a folder (changing the backend policy).
+- Viewing the trash (`/api/trash`) — root-admin only (a user with `Admin` on the root).
+- Viewing the audit log (`/api/audit`) — root-admin only.
 
-**Root-admin** = пользователь с `Admin` на корневом узле. Через ltree-lookup это автоматически наследуется вниз, поэтому root-admin может всё.
+**Root-admin** = a user with `Admin` on the root node. Through ltree lookup that is inherited downward automatically, so root-admin can do anything.
 
-## Share-links (только Web)
+## Share-links (Web only)
 
-Анонимные временные ссылки с ограниченным scope. Только через HTTP/HTTPS; FTP, WebDAV, FUSE и другие протоколы анонимный доступ **не** поддерживают.
+Anonymous temporary links with limited scope. HTTP/HTTPS only; FTP, WebDAV, FUSE and other protocols **do not** support anonymous access.
 
-Таблица [`share_links`](database.md#share_links--анонимные-временные-ссылки-только-web):
+Table [`share_links`](database.md#share_links--anonymous-temporary-links-web-only):
 
 ```sql
 share_links(token, node_id, actions bit(8), expires_at, max_uses, used_count, created_by, created_at)
 ```
 
-**Токен:** 32 байта `crypto/rand` → base64url. Используется как PK таблицы — `SELECT` по токену = O(1) и постоянное время (защита от timing-атаки).
+**Token:** 32 bytes `crypto/rand` → base64url. Used as the table PK — `SELECT` by token is O(1) and constant-time (protection against timing attacks).
 
-**Validation** (на каждое использование):
-1. Токен существует.
+**Validation** (on every use):
+1. The token exists.
 2. `expires_at > now()`.
 3. `max_uses IS NULL OR used_count < max_uses`.
-4. Запрошенное action входит в `actions` ссылки.
+4. The requested action is in the link's `actions`.
 
-Если ОК — `UPDATE used_count = used_count + 1`, выдаём контент. Audit event на каждое использование.
+If OK — `UPDATE used_count = used_count + 1`, serve the content. An audit event on every use.
 
-**Rate limiting по токену** — защита от brute-force перебора. Конфигурируется в общих rate-limit настройках.
+**Rate limiting per token** — protection against brute-force guessing. Configured in the global rate-limit settings.
 
-**Scope ограничения:**
-- `Admin`-биты в share-link запрещены проверкой в Auth Service (нельзя поделиться правом менять ACL).
-- `actions = 0` тоже невалидно — нет смысла создавать ссылку без прав.
+**Scope restrictions:**
+- `Admin` bits in a share-link are rejected by the Auth Service check (you cannot share the right to change ACLs).
+- `actions = 0` is also invalid — there is no point in a link with no permissions.
 
-## Создание share-link
+## Creating a share-link
 
-Endpoint `POST /api/share` принимает `{path, actions, ttl_seconds, max_uses?}`. Требования:
-- Пользователь должен иметь `Admin` на узле (только владелец/админ может поделиться).
-- Запрошенные `actions` должны быть подмножеством его собственных прав на узле.
+Endpoint `POST /api/share` accepts `{path, actions, ttl_seconds, max_uses?}`. Requirements:
+- The user must have `Admin` on the node (only an owner/admin can share).
+- The requested `actions` must be a subset of their own rights on the node.
 
-После создания возвращается `{token, url}`. Сам токен показывается **один раз** — повторно получить нельзя (только revoke + новый).
+On success returns `{token, url}`. The token is shown **once** — it cannot be retrieved later (revoke + new instead).
 
-## Реализация
+## Implementation
 
-См. [internal/rbac/](../../internal/rbac/) и [internal/auth/sharelinks.go](../../internal/auth/sharelinks.go). Тесты — [internal/web/server_test.go](../../internal/web/server_test.go) (TestShareLink*, TestPerm*).
+See [internal/rbac/](../../internal/rbac/) and [internal/auth/sharelinks.go](../../internal/auth/sharelinks.go). Tests — [internal/web/server_test.go](../../internal/web/server_test.go) (TestShareLink*, TestPerm*).

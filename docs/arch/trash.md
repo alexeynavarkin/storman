@@ -1,19 +1,19 @@
-# Trash: soft-delete с возможностью восстановления
+# Trash: soft-delete with restore
 
-`Remove` в storman — soft-delete: узлы помечаются как удалённые, физический контент уезжает в `<meta-storage>/trash/<uuid>/`, можно восстановить через admin UI до истечения retention.
+`Remove` in storman is a soft-delete: nodes are marked deleted, physical content moves to `<meta-storage>/trash/<uuid>/`, and can be restored via the admin UI before retention expires.
 
-## Жизненный цикл удаления
+## Delete lifecycle
 
-Когда вызывается `FileSystem.Remove(ctx, path)` (через любой протокол):
+When `FileSystem.Remove(ctx, path)` is called (via any protocol):
 
-1. **Одна транзакция:**
-   - Рекурсивный `UPDATE nodes SET status='deleted', deleted_at=now() WHERE path <@ $rootPath` — один SQL для всего поддерева (через gist-индекс на `nodes.path`).
+1. **One transaction:**
+   - Recursive `UPDATE nodes SET status='deleted', deleted_at=now() WHERE path <@ $rootPath` — one SQL for the whole subtree (via the gist index on `nodes.path`).
    - Insert `outbox(op='trash', payload={node_id, backend_ref_subtree, trash_uuid, acl_snapshot, original_path, deleted_by})`.
-   - Коммит.
+   - Commit.
 
-2. **После коммита** — executor (`runTrashOutbox` в [internal/storage/dbfs/trash.go](../../internal/storage/dbfs/trash.go)):
-   - `os.Rename` физического поддерева из `<flat-storage>/<original-path>` в `<meta-storage>/trash/<uuid>/payload`. Атомарно (одна ФС).
-   - Записывает `<meta-storage>/trash/<uuid>/trash.meta.json` через atomic tmp + rename. Содержимое:
+2. **After commit** — the executor (`runTrashOutbox` in [internal/storage/dbfs/trash.go](../../internal/storage/dbfs/trash.go)):
+   - `os.Rename` the physical subtree from `<flat-storage>/<original-path>` into `<meta-storage>/trash/<uuid>/payload`. Atomic (single filesystem).
+   - Writes `<meta-storage>/trash/<uuid>/trash.meta.json` via atomic tmp + rename. Content:
      ```json
      {
        "trash_uuid": "...",
@@ -27,52 +27,52 @@
        "acl_snapshot": [...]
      }
      ```
-   - Архивация outbox-строки в `outbox_history` + DELETE из `outbox` в одной транзакции.
+   - Archive the outbox row into `outbox_history` + DELETE from `outbox` in one transaction.
 
-`trash.meta.json` — **служебная** запись корзины, а не side-car пользовательского файла. Она самодостаточна — позволяет восстановить элемент даже если БД утрачена.
+`trash.meta.json` is a **service-side** trash record, not a side-car for a user file. It is self-contained — it lets us restore an item even if the DB is lost.
 
-## Что выживает после удаления
+## What survives a delete
 
-- Физический контент — лежит в `<meta-storage>/trash/<uuid>/payload`, никак не модифицирован.
-- Структура поддерева — сохраняется внутри `payload/` как был на момент удаления.
-- ACL — снимок в `trash.meta.json` (для восстановления исходных прав).
-- Метаданные в БД — `nodes` строки остаются с `status='deleted'`, `deleted_at` non-NULL. **Не удаляются**, чтобы UI мог показывать «удалено такого-то».
+- The physical content — sits in `<meta-storage>/trash/<uuid>/payload`, untouched.
+- The subtree structure — preserved inside `payload/` as it was at delete time.
+- ACLs — a snapshot in `trash.meta.json` (for restoring the original rights).
+- DB metadata — the `nodes` rows remain with `status='deleted'`, `deleted_at` non-NULL. **Not removed**, so the UI can show "deleted on ...".
 
-## Восстановление (`Restore`)
+## Restore (`Restore`)
 
 `POST /api/trash/{trash_uuid}/restore` (admin-only):
 
-1. Читает `trash.meta.json` для целевого trash entry.
-2. Проверяет, что `original_path` свободен (не занят новым узлом). Если занят — конфликт, 409.
-3. **Транзакция:**
-   - `UPDATE nodes SET status='ready', deleted_at=NULL WHERE path <@ <original_path>` — восстанавливает всё поддерево.
-   - Insert outbox `op='restore_trash'` с payload восстановления физических путей.
-4. Executor: `os.Rename` `<trash>/<uuid>/payload` → `<flat-storage>/<original-path>`. Удаляет каталог `<trash>/<uuid>/` (включая `trash.meta.json`).
-5. Архивация outbox.
+1. Reads `trash.meta.json` for the target trash entry.
+2. Verifies that `original_path` is free (not occupied by a new node). If occupied — conflict, 409.
+3. **Transaction:**
+   - `UPDATE nodes SET status='ready', deleted_at=NULL WHERE path <@ <original_path>` — restores the whole subtree.
+   - Insert outbox `op='restore_trash'` with the payload to restore physical paths.
+4. Executor: `os.Rename` `<trash>/<uuid>/payload` → `<flat-storage>/<original-path>`. Removes the directory `<trash>/<uuid>/` (including `trash.meta.json`).
+5. Outbox archiving.
 
-Реализация — `Restore` метод в [internal/storage/dbfs/gc.go](../../internal/storage/dbfs/gc.go).
+Implementation — the `Restore` method in [internal/storage/dbfs/gc.go](../../internal/storage/dbfs/gc.go).
 
-## Покупка (`Purge`)
+## Purge (`Purge`)
 
-`DELETE /api/trash/{trash_uuid}` (admin-only) — окончательное удаление:
+`DELETE /api/trash/{trash_uuid}` (admin-only) — permanent deletion:
 
-1. Читает `trash.meta.json`.
-2. **Транзакция:**
-   - `DELETE FROM nodes WHERE id IN (subtree)` — окончательное удаление метаданных. ON DELETE CASCADE убирает связанные `node_meta`, `permissions`.
-   - Insert outbox `op='purge_trash'` с путём к payload.
-3. Executor: `os.RemoveAll(<trash>/<uuid>/)` — удаление физических файлов.
-4. Архивация outbox.
+1. Reads `trash.meta.json`.
+2. **Transaction:**
+   - `DELETE FROM nodes WHERE id IN (subtree)` — permanent removal of metadata. ON DELETE CASCADE removes related `node_meta`, `permissions`.
+   - Insert outbox `op='purge_trash'` with the path to the payload.
+3. Executor: `os.RemoveAll(<trash>/<uuid>/)` — removal of the physical files.
+4. Outbox archiving.
 
-После Purge восстановить невозможно (если только не из `pg_dump`).
+After Purge, recovery is impossible (unless from `pg_dump`).
 
-## GC корзины
+## Trash GC
 
-Фоновый воркер `StartGC(ctx, interval, retentionDays, logger)` запускается в `serve` и тикает каждый `interval`:
+The background worker `StartGC(ctx, interval, retentionDays, logger)` starts in `serve` and ticks every `interval`:
 
 1. `RunGC(ctx, retention)` — `SELECT trash_uuid FROM trash WHERE deleted_at < now() - retention`.
-2. Для каждого — вызывает `Purge`.
+2. For each — calls `Purge`.
 
-Конфиг:
+Config:
 ```json
 "trash": {
   "retention_days": 30,
@@ -80,29 +80,29 @@
 }
 ```
 
-`retention_days = 0` — отключает time-based GC. Записи остаются до явного Purge через UI.
+`retention_days = 0` disables time-based GC. Rows stay until an explicit Purge via the UI.
 
-## Видимость корзины
+## Trash visibility
 
-`GET /api/trash` — **admin-only**. Причина: `rbac.Effective` фильтрует узлы с `deleted_at IS NOT NULL` (живой ACL на удалённом узле не имеет смысла), поэтому обычные пользователи не могут видеть свои собственные удалённые элементы по существующему ACL-пути. Корзина — административный инструмент, не UI «личной мусорки».
+`GET /api/trash` — **admin-only**. Reason: `rbac.Effective` filters out nodes with `deleted_at IS NOT NULL` (a live ACL on a deleted node makes no sense), so regular users cannot see their own deleted items through the existing ACL path. The trash is an administrative tool, not a "personal recycle bin" UI.
 
-Это сознательное упрощение. Альтернатива (per-user мусорка с уважением ACL на момент удаления) — overkill для personal-scale.
+This is a deliberate simplification. The alternative (per-user recycle bin respecting the ACL at delete time) is overkill for personal scale.
 
-## Атомарность через outbox
+## Atomicity via the outbox
 
-Trash проходит через тот же outbox-механизм, что и обычная запись/удаление (см. [storage.md § Outbox](storage.md#outbox-атомарность-fs--db)). Это значит:
+Trash goes through the same outbox mechanism as a regular write/delete (see [storage.md § Outbox](storage.md#outbox-fs--db-atomicity)). This means:
 
-- Crash после UPDATE `status='deleted'` но до `os.Rename` — `RecoverPending` на старте доигрывает `os.Rename`.
-- Crash после `os.Rename` но до архивации outbox — повторный запуск executor'а делает no-op (`os.Stat` показывает что rename уже выполнен), архивирует outbox.
-- Невозможно состояние «`nodes.status='deleted'` + физический файл в `flat-storage/`» более чем на мгновение между транзакциями.
+- Crash after the `status='deleted'` UPDATE but before `os.Rename` — `RecoverPending` on startup replays `os.Rename`.
+- Crash after `os.Rename` but before outbox archiving — a re-run of the executor is a no-op (`os.Stat` shows the rename already happened), and archives the outbox.
+- A state "`nodes.status='deleted'` + physical file in `flat-storage/`" cannot persist for more than a moment between transactions.
 
-## Восстановление без БД
+## Restore without a DB
 
-Если БД утрачена, но `<meta-storage>/trash/` цел — `trash.meta.json` содержит всё необходимое для ручного восстановления через `recover --from-disk`. Walker, обходя `trash/`, может либо игнорировать поддеревья (default), либо опционально восстанавливать их обратно в `flat-storage/<original_path>`. На MVP это manual operation; автоматизировать пока не требуется.
+If the DB is lost but `<meta-storage>/trash/` is intact — `trash.meta.json` contains everything needed for manual restore via `recover --from-disk`. The walker, when traversing `trash/`, can either ignore the subtrees (default) or optionally restore them back into `flat-storage/<original_path>`. In MVP this is a manual operation; automation is not yet required.
 
-## Реализация
+## Implementation
 
-- [internal/storage/dbfs/remove.go](../../internal/storage/dbfs/remove.go) — `Remove` (рекурсивный UPDATE + outbox).
+- [internal/storage/dbfs/remove.go](../../internal/storage/dbfs/remove.go) — `Remove` (recursive UPDATE + outbox).
 - [internal/storage/dbfs/trash.go](../../internal/storage/dbfs/trash.go) — `applyTrash`, `runTrashOutbox`, `trash.meta.json` writer.
 - [internal/storage/dbfs/gc.go](../../internal/storage/dbfs/gc.go) — `ListTrash`, `Restore`, `Purge`, `RunGC`, `StartGC`.
 - [internal/web/trash.go](../../internal/web/trash.go) — HTTP handlers (`/api/trash/*`).

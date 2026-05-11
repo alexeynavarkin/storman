@@ -1,91 +1,91 @@
 ---
 id: ADR-0004
-title: App-passwords — единый секрет для всех non-web протоколов
+title: App-passwords — a single secret for all non-web protocols
 status: accepted
 date: 2026-05-11
 deciders: alexnav
 ---
 
-# ADR-0004: App-passwords — единый секрет для всех non-web протоколов
+# ADR-0004: App-passwords — a single secret for all non-web protocols
 
 ## Context and problem statement
 
-storman имеет несколько delivery-протоколов, не работающих с HTTP-сессиями: **FTPS** (Basic-style auth по протоколу FTP), **WebDAV** (HTTP Basic auth), в будущем — FUSE, S3-compat, rsync. Все они получают `(login, secret)` от клиента и должны его проверить.
+storman has several delivery protocols that do not work with HTTP sessions: **FTPS** (Basic-style auth at the FTP protocol level), **WebDAV** (HTTP Basic auth), and in the future — FUSE, S3-compat, rsync. All of them receive `(login, secret)` from the client and must verify it.
 
-Возможные подходы к secret:
-- Использовать **основной пароль** пользователя.
-- Завести **app-passwords** — отдельные long-lived токены, привязанные к пользователю, ревокабельные независимо от основного пароля.
-- Использовать **per-protocol scopes** — каждый app-password ограничен конкретным протоколом.
-- Использовать **per-action scopes** — каждый app-password имеет битмаску допустимых действий.
+Possible approaches to the secret:
+- Use the user's **main password**.
+- Introduce **app-passwords** — separate long-lived tokens tied to a user, revocable independently of the main password.
+- Use **per-protocol scopes** — each app-password limited to a specific protocol.
+- Use **per-action scopes** — each app-password carries a bitmask of allowed actions.
 
-Вопрос: какая модель app-passwords достаточно надёжна и проста, чтобы оправдать включение в MVP?
+Question: which app-password model is reliable and simple enough to justify inclusion in MVP?
 
 ## Decision drivers
 
-- **2FA-совместимость.** FTPS/WebDAV-клиенты не умеют TOTP. Если у пользователя включена 2FA, основной пароль уже недоступен этим протоколам — нужен другой secret.
-- **Ревокация.** Утечка iPhone-приложения / лаптопа со встроенным FTP-клиентом не должна требовать смены основного пароля.
-- **Удобство пользователя.** Каждый новый протокол не должен требовать новой entity и нового UI-flow.
-- **Простота кода.** Меньше state на app-password = меньше invariant'ов держать в голове.
-- **Уязвимость скоупов.** Per-action / per-protocol scopes на токенах выглядят как defence-in-depth, но требуют дисциплины (правильное scope при создании, корректная проверка в каждом протоколе) и легко становятся либо «дай всё» (default), либо «забыли проверить».
+- **2FA compatibility.** FTPS/WebDAV clients cannot do TOTP. If a user has 2FA enabled, the main password is no longer usable for those protocols — a different secret is needed.
+- **Revocation.** A leak of an iPhone app / a laptop with an embedded FTP client must not require changing the main password.
+- **User convenience.** Each new protocol must not require a new entity and a new UI flow.
+- **Code simplicity.** Less state on an app-password = fewer invariants to keep in mind.
+- **Vulnerability of scopes.** Per-action / per-protocol scopes on tokens look like defence-in-depth, but require discipline (correct scope at creation, correct check in every protocol) and easily become either "give everything" (default) or "we forgot to check".
 
 ## Considered options
 
-### Option A — App-passwords, единый scope, кросс-протокольный (chosen)
+### Option A — App-passwords, single scope, cross-protocol (chosen)
 
-- Таблица `app_passwords(id, user_id, label, hash, created_at, last_used)`.
-- Один app-password = долгоживущий секрет, привязанный к пользователю. Никаких scope-полей.
-- `AuthenticateAppPassword(login, secret)` пробует основной пароль (`Authenticate`), при mismatch — fallback на список `app_passwords` пользователя.
-- Используется одинаково FTPS, WebDAV, любым будущим non-web протоколом.
-- При успехе — `UPDATE last_used`, сброс счётчика `failed_attempts`. Brute-force-counters общие с основным логином (нельзя пробить storman через FTPS не отметившись на web `failed_attempts`).
-- При создании пользователь видит секрет один раз; в БД лежит только argon2id-хеш.
-- Ревокация — `DELETE FROM app_passwords WHERE id = $1`.
+- Table `app_passwords(id, user_id, label, hash, created_at, last_used)`.
+- One app-password = a long-lived secret tied to the user. No scope fields.
+- `AuthenticateAppPassword(login, secret)` tries the main password (`Authenticate`); on mismatch — falls back to the user's `app_passwords` list.
+- Used identically by FTPS, WebDAV, and any future non-web protocol.
+- On success — `UPDATE last_used`, reset `failed_attempts`. Brute-force counters are shared with the main login (storman cannot be pried via FTPS without marking the web `failed_attempts`).
+- On creation the user sees the secret once; the DB stores only an argon2id hash.
+- Revocation — `DELETE FROM app_passwords WHERE id = $1`.
 
-### Option B — Per-protocol scope на токенах
+### Option B — Per-protocol scope on tokens
 
-Каждый app-password имеет колонку `protocol = 'ftps' | 'webdav' | …`. Проверка: токен валиден только если протокол совпал.
+Each app-password has a column `protocol = 'ftps' | 'webdav' | …`. Check: the token is valid only if the protocol matches.
 
-### Option C — Per-action scope (битмаска `Read|Write|…`)
+### Option C — Per-action scope (bitmask `Read|Write|…`)
 
-Каждый app-password несёт свою actions-маску, накладывается поверх RBAC пользователя как ограничение.
+Each app-password carries its own action mask, applied on top of the user's RBAC as a restriction.
 
-### Option D — OAuth-style refresh/access токены
+### Option D — OAuth-style refresh/access tokens
 
-Полноценная OAuth2 client-credentials схема с TTL и refresh.
+A full OAuth2 client-credentials scheme with TTL and refresh.
 
 ## Decision outcome
 
-**Chosen: Option A — единый кросс-протокольный scope.**
+**Chosen: Option A — a single cross-protocol scope.**
 
-Обоснование:
-- storman — single-user / family-scale. Нет сценария «дать iPhone доступ только на чтение». Если пользователь хочет ограничить scope, проще создать **отдельного пользователя** в storman с нужным RBAC и выдать ему app-password.
-- Per-action scope на токенах — это второй слой авторизации поверх RBAC. Это **усложняет ментальную модель**: «у Alice есть Read+Write на /docs, но её iPhone-токен только Read; а через FTPS у неё ещё какой-то третий scope». Один токен = один user = один набор прав.
-- Per-protocol scope даёт минимальный security win (компрометация app-password всё ещё компрометирует пользователя), при этом каждый новый протокол потребует помечать его в таблице и enum-расширения. Когнитивная нагрузка не оправдана.
-- OAuth-flow требует client registration + TTL-логика + refresh — это нетривиальный объём кода для одного persona на пользователя.
-- 2FA: остаётся в roadmap'е (`users.totp_secret` уже зарезервирован). Когда добавим — правило простое: «при включённой 2FA для FTPS/WebDAV требуется app-password». Сейчас 2FA нет, app-password — opt-in удобство.
+Rationale:
+- storman is single-user / family-scale. There is no scenario "give an iPhone read-only access". If a user wants to limit scope, it is simpler to create **a separate user** in storman with the desired RBAC and issue them an app-password.
+- Per-action scope on tokens is a second layer of authorization over RBAC. It **complicates the mental model**: "Alice has Read+Write on /docs, but her iPhone token is Read-only; and over FTPS she has yet a third scope". One token = one user = one set of rights.
+- Per-protocol scope offers minimal security win (a compromised app-password still compromises the user), while every new protocol would require marking it in the table and extending the enum. The cognitive load is not justified.
+- An OAuth flow requires client registration + TTL logic + refresh — non-trivial code volume for one persona per user.
+- 2FA: stays in the roadmap (`users.totp_secret` is already reserved). When we add it — the rule is simple: "if 2FA is enabled, FTPS/WebDAV require an app-password". For now there is no 2FA, app-passwords are an opt-in convenience.
 
 ## Consequences
 
 ### Positive
-- Минимум state: одна таблица, одна функция `AuthenticateAppPassword`. Тестируется один раз, валидна для всех протоколов.
-- Лёгкая ментальная модель для пользователя: «токен = я + удобный пароль».
-- Brute-force unified: counters в `users.failed_attempts` общие, не получится «обскакать» web-rate-limit через FTPS.
-- Подключение нового протокола = вызов `AuthenticateAppPassword` + ничего больше.
+- Minimum state: one table, one `AuthenticateAppPassword` function. Tested once, valid for all protocols.
+- Easy mental model for the user: "a token = me + a convenient password".
+- Brute-force unified: `users.failed_attempts` counters are shared, you cannot "outrun" the web rate-limit via FTPS.
+- Hooking up a new protocol = call `AuthenticateAppPassword` + nothing else.
 
 ### Negative
-- Компрометация app-password = компрометация пользователя по всем non-web протоколам. Митигация: пользователь должен ревокать токен (UI для CRUD есть).
-- Невозможно «выдать read-only WebDAV-доступ другому человеку», не создав ему отдельного пользователя.
-- Невозможно ограничить app-password по IP / TTL / max-uses (нет таких полей).
+- A compromised app-password = a compromised user across all non-web protocols. Mitigation: the user must revoke the token (UI CRUD exists).
+- Cannot "give a read-only WebDAV access to another person" without creating them a separate user.
+- Cannot limit an app-password by IP / TTL / max-uses (no such fields).
 
 ### Neutral
-- 2FA пока не реализована — следовательно, app-passwords — это **convenience layer**, а не security requirement. Когда 2FA появится, semantics изменятся (app-password станет обязательным для FTPS/WebDAV), но интерфейс — нет.
+- 2FA is not implemented yet — therefore, app-passwords are a **convenience layer**, not a security requirement. Once 2FA arrives, semantics will change (an app-password becomes mandatory for FTPS/WebDAV), but the interface does not.
 
 ## Future evolution
 
-Если потребуется per-protocol или per-action scope:
-- Добавить колонку `scopes jsonb` в `app_passwords`. NULL = «все», иначе — список allowed protocols / action-bits.
-- Обновить `AuthenticateAppPassword` чтобы возвращать не только `User`, но и `scope`-фильтр, который `web.davAuth` / `ftpsrv.AuthUser` применяют поверх RBAC.
+If per-protocol or per-action scope becomes necessary:
+- Add a `scopes jsonb` column to `app_passwords`. NULL = "all", otherwise — a list of allowed protocols / action bits.
+- Update `AuthenticateAppPassword` to return not only `User`, but also a scope filter applied on top of RBAC by `web.davAuth` / `ftpsrv.AuthUser`.
 
-Это совместимое расширение — пока scopes нет, поведение не меняется.
+This is a compatible extension — while there are no scopes, behaviour does not change.
 
 ## Related
 

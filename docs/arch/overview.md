@@ -1,8 +1,8 @@
 # System overview & disk layout
 
-storman — single-binary Go-сервер + React SPA (embedded в бинарь) + PostgreSQL. Один процесс на хост; один пользователь / небольшая семья. Цель раздела — дать читателю общую картину за 5 минут перед тем, как нырять в детали подсистем.
+storman is a single-binary Go server + a React SPA (embedded into the binary) + PostgreSQL. One process per host; one user / a small family. The goal of this section is to give the reader the big picture in 5 minutes before diving into subsystem details.
 
-## Большая картинка
+## Big picture
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
@@ -19,7 +19,7 @@ storman — single-binary Go-сервер + React SPA (embedded в бинарь)
 │                            │                                    │
 │  ┌─────────────────────────▼─────────────────────────────────┐  │
 │  │                   storage.FileSystem                      │  │
-│  │      единая точка для всех мутаций (см. ADR-0001)         │  │
+│  │      the single point for all mutations (see ADR-0001)    │  │
 │  └─────┬─────────────────────────────────────────┬───────────┘  │
 │        │                                         │              │
 │  ┌─────▼──────┐  ┌──────────┐  ┌─────────────┐  ┌▼────────────┐ │
@@ -41,58 +41,58 @@ storman — single-binary Go-сервер + React SPA (embedded в бинарь)
    └────────────┘                                  └──────────────┘
 ```
 
-Два независимых хранилища (PostgreSQL + disk), связанные транзакционным outbox-паттерном. Каждая мутация делает первую транзакцию (insert outbox + node `status='pending'`), затем backend публикует контент, затем вторую транзакцию (`status='ready'` + архивация outbox). Crash в любой момент — recovery на старте процесса доигрывает оставшиеся outbox-строки. Подробнее: [storage.md](storage.md) и [ADR-0002](../adr/0002-outbox-fs-db-atomicity.md).
+Two independent stores (PostgreSQL + disk), connected by a transactional outbox pattern. Each mutation runs a first transaction (insert outbox + node `status='pending'`), then the backend publishes content, then a second transaction (`status='ready'` + outbox archiving). A crash at any point — recovery on process startup replays the remaining outbox rows. More: [storage.md](storage.md) and [ADR-0002](../adr/0002-outbox-fs-db-atomicity.md).
 
-Все delivery-протоколы (Web API, FTPS, WebDAV, tus.io, share-links) ходят через `storage.FileSystem`. Это инвариант, не convention — см. [ADR-0001](../adr/0001-filesystem-boundary.md).
+All delivery protocols (Web API, FTPS, WebDAV, tus.io, share-links) go through `storage.FileSystem`. This is an invariant, not a convention — see [ADR-0001](../adr/0001-filesystem-boundary.md).
 
-## Раскладка на диске
+## On-disk layout
 
-Один параметр в конфиге — `data_dir`. Внутри фиксированная раскладка, не конфигурируется:
+A single config parameter — `data_dir`. The layout inside is fixed, not configurable:
 
 ```text
-<data-dir>/                     # = config.data_dir, например /var/lib/storman
-├── config.json                 # Локальные настройки сервиса (DSN, secrets_key и т.п.)
-├── flat-storage/               # storage-dir: пользовательские файлы «как есть», без side-car
+<data-dir>/                     # = config.data_dir, e.g. /var/lib/storman
+├── config.json                 # local service settings (DSN, secrets_key, etc.)
+├── flat-storage/               # storage-dir: user files as-is, no side-cars
 │   ├── photos/
 │   │   └── image.jpg
 │   └── docs/
 │       └── report.pdf
-└── meta-storage/               # storage-meta-dir: служебные данные
+└── meta-storage/               # storage-meta-dir: service data
     ├── trash/
     │   └── <node_uuid>/
-    │       ├── payload         # удалённый файл/поддерево
+    │       ├── payload         # deleted file/subtree
     │       └── trash.meta.json # original_path, deleted_by, acl_snapshot, …
-    ├── uploads/                # tus-стейджинг + FileWriter staging
-    ├── backups/                # PG-дампы: <ISO-ts>.dump
-    └── blobs/                  # [отложено] CDC blobstore
+    ├── uploads/                # tus staging + FileWriter staging
+    ├── backups/                # PG dumps: <ISO-ts>.dump
+    └── blobs/                  # [deferred] CDC blobstore
 ```
 
-`flat-storage/` и `meta-storage/` — соседи внутри одного `data-dir`, всегда на одной файловой системе. Это даёт:
+`flat-storage/` and `meta-storage/` are neighbours inside a single `data-dir`, always on the same filesystem. This gives:
 
-- **Атомарный `rename`** между staging и целевым путём (POSIX гарантирует rename в пределах ФС). Никаких отдельных проверок `st_dev`.
-- **Изоляция служебных данных от пользовательских.** Web/FTP/WebDAV видят `flat-storage/` как корень своего дерева; служебные `trash/`, `uploads/`, `backups/` лежат рядом и для протоколов недоступны by construction.
-- **Чистый бэкап `flat-storage/`** для пользовательских инструментов (Time Machine, restic, rsync). Бэкапы PG идут отдельно в `meta-storage/backups/`.
-- **Эволюция раздельно.** Quotas, retention, GC применяются к meta независимо от content.
+- **Atomic `rename`** between staging and the destination path (POSIX guarantees rename atomicity within a filesystem). No need for separate `st_dev` checks.
+- **Isolation of service data from user data.** Web/FTP/WebDAV see `flat-storage/` as the root of their tree; the service-side `trash/`, `uploads/`, `backups/` live next to it and are inaccessible to those protocols by construction.
+- **Clean `flat-storage/` backups** for user tools (Time Machine, restic, rsync). PG backups go separately into `meta-storage/backups/`.
+- **Independent evolution.** Quotas, retention, GC apply to meta independently of content.
 
-`flat-storage/` — это то, что [ADR-0006](../adr/0006-flatfile-only-mvp.md) называет «honest storage»: файлы лежат как есть, никаких side-car. CDC blobstore (когда появится, см. ROADMAP) живёт в `meta-storage/blobs/`, не мешая видимому пользователю дереву.
+`flat-storage/` is what [ADR-0006](../adr/0006-flatfile-only-mvp.md) calls "honest storage": files are on disk as-is, no side-cars. The CDC blobstore (when it lands, see ROADMAP) lives in `meta-storage/blobs/` and does not interfere with the user-visible tree.
 
-## Конфигурация
+## Configuration
 
-`config.json` валидируется при загрузке:
+`config.json` is validated on load:
 
-- `data_dir` совпадает с расположением самого файла (защита от копирования конфига между хостами).
-- `secrets_key` декодируется в 32 байта (AEAD для шифрования TOTP-секретов и подобного).
-- DSN парсится как валидный URL.
+- `data_dir` matches the location of the config file itself (a guard against copying the config between hosts).
+- `secrets_key` decodes to 32 bytes (AEAD for encrypting TOTP secrets and similar).
+- The DSN parses as a valid URL.
 
-Остальные секции (`backup`, `web`, `trash`, `ftp`, `indexing`, `tus`, `webdav`) — опциональные с разумными дефолтами. Подробности по подсистемам — в соответствующих arch-документах.
+Other sections (`backup`, `web`, `trash`, `ftp`, `indexing`, `tus`, `webdav`) are optional with sensible defaults. Subsystem details live in the corresponding arch documents.
 
-## Что дальше
+## What's next
 
-- [storage.md](storage.md) — `FileSystem` / `FileBackend` интерфейсы, outbox, upload path, жизненный цикл записи.
-- [database.md](database.md) — схема PostgreSQL, партиционирование, индексы.
-- [rbac.md](rbac.md) — модель прав, computed Traverse, share-links.
+- [storage.md](storage.md) — `FileSystem` / `FileBackend` interfaces, the outbox, the upload path, the write lifecycle.
+- [database.md](database.md) — PostgreSQL schema, partitioning, indexes.
+- [rbac.md](rbac.md) — permission model, computed Traverse, share-links.
 - [auth.md](auth.md) — sessions, CSRF, app-passwords, login security.
-- [trash.md](trash.md) — мягкое удаление, GC.
+- [trash.md](trash.md) — soft-delete, GC.
 - [indexing.md](indexing.md) — async pipeline workers.
-- [interfaces.md](interfaces.md) — детали по каждому delivery-протоколу.
+- [interfaces.md](interfaces.md) — details for each delivery protocol.
 - [backup-dr.md](backup-dr.md) — `pg_dump` + `recover --from-disk`.

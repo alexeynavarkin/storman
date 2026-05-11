@@ -1,89 +1,89 @@
 ---
 id: ADR-0006
-title: В MVP реализуем только FlatFile backend; CDC откладываем
+title: MVP ships only the FlatFile backend; CDC is deferred
 status: accepted
 date: 2026-05-11
 deciders: alexnav
 ---
 
-# ADR-0006: В MVP реализуем только `FlatFile` backend; CDC откладываем
+# ADR-0006: MVP ships only the `FlatFile` backend; CDC is deferred
 
 ## Context and problem statement
 
-`storage.FileBackend`-абстракция предполагает несколько реализаций:
+The `storage.FileBackend` abstraction presumes several implementations:
 
-- **`FlatFile`** — пользовательский файл лежит на диске как есть, `BackendRef` = relative path в `<storage-dir>`.
-- **`CDCFile`** (отложено) — content-defined chunking (FastCDC), дедупликация на уровне чанков, манифест per-file. `BackendRef` = manifest id, контент в `<meta>/blobs/`.
+- **`FlatFile`** — the user file sits on disk as-is, `BackendRef` = relative path in `<storage-dir>`.
+- **`CDCFile`** (deferred) — content-defined chunking (FastCDC), chunk-level deduplication, a manifest per file. `BackendRef` = manifest id, content in `<meta>/blobs/`.
 
-CDC даёт значимые преимущества: дешёвая дельта-передача (rsync-style), дедупликация (одинаковые чанки в разных файлах хранятся однажды), линейный рост размера хранилища при многих версиях, готовность к remote blob storage. Но эту функциональность не нужно поставлять в первой версии.
+CDC offers meaningful advantages: cheap delta transfer (rsync-style), deduplication (identical chunks across files are stored once), linear storage growth with many versions, readiness for remote blob storage. But this functionality is not required in the first version.
 
-Вопрос: что реально нужно делать в MVP — только `FlatFile`, или сразу `FlatFile + CDCFile` с per-directory выбором?
+Question: what should be done in MVP — only `FlatFile`, or both `FlatFile + CDCFile` with a per-directory choice?
 
 ## Decision drivers
 
-- **Time-to-MVP.** Каждый месяц до первого работающего MVP — стоимость. CDC — сложная инженерия (FastCDC, refcount-GC, копи-on-write staging, scrub-механизм).
-- **Архитектурная заложенность.** Интерфейс `FileBackend` должен поддержать оба варианта без переписывания. Это влияет на дизайн, даже если реализация одна.
-- **Чистота storage layer'а.** Honest storage (см. MISSION) — пользователь может настроить Time Machine на `flat-storage/` и получить чистый архив. CDC ломает это.
-- **Use-case fit.** Нужна ли дедупликация в personal-scale? У одного пользователя десятки тысяч файлов, дублей мало.
+- **Time-to-MVP.** Every month before the first working MVP is a cost. CDC is complex engineering (FastCDC, refcount-GC, copy-on-write staging, scrub mechanism).
+- **Architectural foresight.** The `FileBackend` interface must support both options without rewriting. That influences the design even if there is only one implementation.
+- **Purity of the storage layer.** Honest storage (see MISSION) — a user can point Time Machine at `flat-storage/` and get a clean archive. CDC breaks that.
+- **Use-case fit.** Is deduplication needed at personal scale? A single user has tens of thousands of files with few duplicates.
 
 ## Considered options
 
-### Option A — FlatFile-only в MVP, CDC отложен (chosen)
+### Option A — FlatFile-only in MVP, CDC deferred (chosen)
 
-- В MVP реализуется только `flat.FlatFile`.
-- Интерфейс `FileBackend` спроектирован так, чтобы поддерживать `CDCFile` без изменений (см. [docs/arch/storage.md](../arch/storage.md)): `BackendRef.Data` opaque, `Allocate` принимает `AllocHint`, `OpenWrite` поддерживает `Modify`-режим для будущего lazy fetch.
-- `nodes.backend_kind` сейчас всегда `'flat'`, но колонка nullable у папок (политика для новых детей).
-- CDC переезжает в [ROADMAP/Later](../../ROADMAP.md), включая миграционный механизм между бэкендами (`storman migrate --to=cdc <path>`).
+- MVP implements only `flat.FlatFile`.
+- The `FileBackend` interface is designed to support `CDCFile` without modification (see [docs/arch/storage.md](../arch/storage.md)): `BackendRef.Data` is opaque, `Allocate` takes an `AllocHint`, `OpenWrite` supports a `Modify` mode for future lazy fetch.
+- `nodes.backend_kind` is currently always `'flat'`, but the column is nullable on folders (policy for new children).
+- CDC moves into [ROADMAP/Later](../ROADMAP.md), including the migration mechanism between backends (`storman migrate --to=cdc <path>`).
 
-### Option B — FlatFile + CDC оба в MVP
+### Option B — FlatFile + CDC both in MVP
 
-Реализовать оба бэкенда сразу, per-directory выбор через `nodes.backend_kind = 'cdc'` на папке, наследование потомками.
+Implement both backends at once, per-directory choice via `nodes.backend_kind = 'cdc'` on a folder, inherited by descendants.
 
-### Option C — Только CDC, без FlatFile
+### Option C — CDC only, no FlatFile
 
-Самый минималистичный интерфейс — один бэкенд. Все файлы автоматически чанкуются и дедупятся.
+The most minimalistic interface — one backend. All files are automatically chunked and deduplicated.
 
 ## Decision outcome
 
-**Chosen: Option A — FlatFile-only в MVP.**
+**Chosen: Option A — FlatFile-only in MVP.**
 
-Обоснование:
-- **FlatFile = honest storage.** Это часть value proposition storman (см. MISSION). Время Machine / restic / rsync напрямую видят пользовательские файлы как они есть.
-- **MVP уже большой.** 5 delivery-интерфейсов, async indexing, RBAC, корзина, audit, backup/recover. Добавление CDC удвоило бы scope MVP.
-- **Use-case fit.** Дедупликация выигрывает на повторяющихся данных (бэкапах, версионных архивах). У single-user personal-scale storman основной workload — личные фото/документы. Эффект дедупа маргинален.
-- **Архитектура заложена.** Интерфейс `FileBackend` уже спроектирован под CDC (Allocate, opaque BackendRef, WriteMode.Modify). Добавление CDC = новый файл `cdc.go`, без изменений в существующих протоколах или dbfs.
-- **CDC не free.** Random read через манифест → бинпоиск → pread по чанку — дороже FlatFile в типичном случае. Дедупликация ценна только при значимом overlap.
+Rationale:
+- **FlatFile = honest storage.** This is part of storman's value proposition (see MISSION). Time Machine / restic / rsync see user files directly as-is.
+- **MVP is already big.** 5 delivery interfaces, async indexing, RBAC, trash, audit, backup/recover. Adding CDC would double the MVP scope.
+- **Use-case fit.** Deduplication wins on repetitive data (backups, versioned archives). For a single-user personal-scale storman the main workload is personal photos/documents. The dedup effect is marginal.
+- **The architecture is laid out.** The `FileBackend` interface is already designed for CDC (Allocate, opaque BackendRef, WriteMode.Modify). Adding CDC = a new `cdc.go` file, no changes in existing protocols or dbfs.
+- **CDC is not free.** A random read through manifest → binary search → pread on a chunk is more expensive than FlatFile in the typical case. Deduplication is only valuable with significant overlap.
 
-Option C (CDC-only) отвергается из-за honest-storage принципа. Option B — преждевременная оптимизация: можно добавить CDC позже без миграции existing файлов (бэкенд per-file, не per-database).
+Option C (CDC-only) is rejected because of the honest-storage principle. Option B is premature optimization: CDC can be added later without migrating existing files (the backend is per-file, not per-database).
 
 ## Consequences
 
 ### Positive
-- MVP завершён за разумное время.
-- Пользователь видит свои файлы как файлы. Бэкапы стандартными инструментами работают.
-- Меньше моveable parts, меньше bug surface.
-- `FlatFile` атомарен через `tmp + fsync + rename` на одной ФС — proven simple pattern.
+- MVP is finished in a reasonable time.
+- The user sees their files as files. Backups with standard tools work.
+- Fewer moving parts, less bug surface.
+- `FlatFile` is atomic via `tmp + fsync + rename` on one filesystem — a proven simple pattern.
 
 ### Negative
-- Дублирующиеся файлы хранятся дважды. Для типичного personal-storage scale — ОК.
-- Нет дешёвой дельта-передачи (rsync через storman, sync с iPhone-приложением, и т.п.).
-- Если CDC потребуется срочно — миграция existing FlatFile-узлов в CDC не реализована (она в [ROADMAP/Later](../../ROADMAP.md)).
+- Duplicate files are stored twice. For typical personal-storage scale — OK.
+- No cheap delta transfer (rsync through storman, sync with an iPhone app, etc.).
+- If CDC is urgently needed — migration of existing FlatFile nodes to CDC is not implemented (it is in [ROADMAP/Later](../ROADMAP.md)).
 
 ### Neutral
-- `<meta>/blobs/` каталог зарезервирован в раскладке (см. [docs/arch/overview.md](../arch/overview.md)) под будущий CDC. Сейчас не создаётся.
-- Колонка `nodes.backend_kind` уже несёт двойную семантику (immutable у файлов, политика у папок) — это работает уже сейчас, просто значения всегда `'flat'`.
+- The `<meta>/blobs/` directory is reserved in the layout (see [docs/arch/overview.md](../arch/overview.md)) for future CDC. Currently not created.
+- The `nodes.backend_kind` column already carries dual semantics (immutable on files, policy on folders) — it works today, just with all values being `'flat'`.
 
-## Когда пересматривать
+## When to reconsider
 
-Триггеры для активации [ROADMAP/Later → CDC](../../ROADMAP.md):
-- Появление сценария rsync / FUSE с большими файлами, где random write делает FlatFile неэффективным (требуется shallow-write через chunked-storage).
-- Растущий disk-footprint от дублей (пока не замечен в реальных deployments — пользователь один).
-- Версионирование файлов (см. [ROADMAP/Later](../../ROADMAP.md) — CDC делает это near-free).
-- Remote blob storage (S3): chunks отдаются на S3, manifests остаются локально.
+Triggers for activating [ROADMAP/Later → CDC](../ROADMAP.md):
+- The appearance of an rsync / FUSE scenario with large files where random write makes FlatFile inefficient (a shallow-write through chunked storage is required).
+- Growing disk footprint from duplicates (not yet observed in real deployments — single user).
+- File versioning (see [ROADMAP/Later](../ROADMAP.md) — CDC makes this near-free).
+- Remote blob storage (S3): chunks go to S3, manifests stay local.
 
 ## Related
 
 - Implementation: [internal/storage/flat/](../../internal/storage/flat/).
 - Architecture: [docs/arch/storage.md](../arch/storage.md).
-- ROADMAP: [Later → CDC-бэкенд](../../ROADMAP.md).
-- CDC-набросок (что ожидается реализовать когда возьмёмся): `git show HEAD~:PLAN.md` (файл был удалён в этом же коммите, секция «5.1 CDC-бэкенд» сохранена в git-истории как исходный дизайн).
+- ROADMAP: [Later → CDC backend](../ROADMAP.md).
+- CDC sketch (what we expect to build when we pick it up): `git show HEAD~:PLAN.md` (the file was removed in the same commit; the "5.1 CDC backend" section is preserved in git history as the original design).

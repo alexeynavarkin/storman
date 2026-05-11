@@ -1,223 +1,223 @@
 # Database schema
 
-PostgreSQL — единственная внешняя зависимость storman. Выбор обоснован:
+PostgreSQL is the only external dependency of storman. The choice is justified by:
 
-- Конкурентные writer'ы (Web + FTPS + WebDAV + воркеры индексации одновременно).
-- JSONB + GIN для расширяемых метаданных.
-- `ltree` для запросов по дереву (materialized path).
-- Партиционирование истории (`outbox_history`, `jobs_history`, `audit_log`).
-- `citext` для case-insensitive логинов.
-- `pgcrypto.gen_random_uuid()` для PK.
+- Concurrent writers (Web + FTPS + WebDAV + indexing workers simultaneously).
+- JSONB + GIN for extensible metadata.
+- `ltree` for tree queries (materialized path).
+- Partitioning of history (`outbox_history`, `jobs_history`, `audit_log`).
+- `citext` for case-insensitive logins.
+- `pgcrypto.gen_random_uuid()` for primary keys.
 
-Подключение — `pgx/v5 + pgxpool`. Миграции — embedded SQL через `golang-migrate`, файлы в [internal/migrations/sql/](../../internal/migrations/sql/), zero-padded prefix.
+Connection — `pgx/v5 + pgxpool`. Migrations — embedded SQL via `golang-migrate`, files under [internal/migrations/sql/](../../internal/migrations/sql/), zero-padded prefix.
 
-## Ключевые таблицы
+## Key tables
 
-### `nodes` — дерево файлов и папок
+### `nodes` — file and folder tree
 
 ```sql
-id            uuid primary key                  -- стабильный ID узла, не меняется при rename/move
-parent_id     uuid references nodes(id)        -- родительская папка; NULL только для корня
-path          ltree not null                    -- materialized path 'root.docs.report'; gist-индекс для subtree-запросов
-name          text not null                     -- имя узла в родителе (последний сегмент path)
+id            uuid primary key                  -- stable node ID, does not change on rename/move
+parent_id     uuid references nodes(id)        -- parent folder; NULL only for the root
+path          ltree not null                    -- materialized path 'root.docs.report'; gist index for subtree queries
+name          text not null                     -- node name within parent (last segment of path)
 type          node_type not null                -- enum: 'file' | 'dir'
-backend_kind  text                              -- двойная семантика: у файла — фактический бэкенд (NOT NULL, immutable);
-                                                --                    у папки — политика для НОВЫХ детей (NULL = наследовать)
-backend_ref   text                              -- backend-specific: для 'flat' — relative path в flat-storage/
-                                                --                    для 'cdc'  — manifest id (будущее)
-size          bigint                            -- байт; NULL для папок и pending-файлов; заполняется на Commit
-mime          text                              -- определяется по magic bytes (НЕ по Content-Type клиента)
-mtime         timestamptz                       -- mtime содержимого; обновляется на каждом успешном Commit
-sha256        bytea                             -- 32 байта; дублируется из node_meta для быстрого lookup
+backend_kind  text                              -- dual semantics: on a file — the actual backend (NOT NULL, immutable);
+                                                --                 on a folder — policy for NEW children (NULL = inherit)
+backend_ref   text                              -- backend-specific: for 'flat' — relative path in flat-storage/
+                                                --                    for 'cdc'  — manifest id (future)
+size          bigint                            -- bytes; NULL for folders and pending files; populated on Commit
+mime          text                              -- detected by magic bytes (NOT from the client's Content-Type)
+mtime         timestamptz                       -- mtime of the content; updated on each successful Commit
+sha256        bytea                             -- 32 bytes; duplicated from node_meta for fast lookup
 status        node_status not null              -- enum: 'pending' | 'ready' | 'deleted' | 'broken'
 created_at    timestamptz default now()
 updated_at    timestamptz default now()
-deleted_at    timestamptz                       -- момент перевода в корзину; GC корзины работает по этому полю
+deleted_at    timestamptz                       -- moment the node entered the trash; trash GC uses this field
 unique (parent_id, name)
 
 check (type <> 'file' or (backend_kind is not null and backend_ref is not null))
 check (type <> 'dir'  or backend_ref is null)
 ```
 
-**Индексы:**
-- `gist(path)` — ancestor/descendant, `path <@ root` для subtree-операций (корзина, удаление, ACL traverse).
-- `btree(sha256)` — поиск дубликатов.
+**Indexes:**
+- `gist(path)` — ancestor/descendant, `path <@ root` for subtree operations (trash, delete, ACL traverse).
+- `btree(sha256)` — duplicate search.
 - `btree(parent_id)` — listing.
-- `partial btree(deleted_at) WHERE deleted_at IS NOT NULL` — GC корзины.
+- `partial btree(deleted_at) WHERE deleted_at IS NOT NULL` — trash GC.
 
-**Статусы:**
-- `pending` — upload идёт, файла нет в целевом пути ещё (`backend_ref` указывает на staging или будущее место).
-- `ready` — файл опубликован, контент на месте.
-- `deleted` — soft-delete, узел в корзине; `deleted_at` non-NULL.
-- `broken` — recovery-флаг: мета есть, контента нет (`fsck` ставит).
+**Statuses:**
+- `pending` — upload in progress, the file is not yet at the target path (`backend_ref` points to staging or the future location).
+- `ready` — the file is published, content is in place.
+- `deleted` — soft-delete, the node is in the trash; `deleted_at` is non-NULL.
+- `broken` — a recovery flag: metadata exists, content does not (set by `fsck`).
 
-### `node_meta` — типизированные частые поля + JSONB
+### `node_meta` — typed frequent fields + JSONB
 
 ```sql
 node_id      uuid primary key references nodes(id) on delete cascade
-width        int                              -- ширина изображения/видео в пикселях
+width        int                              -- image/video width in pixels
 height       int
-taken_at     timestamptz                      -- EXIF DateTimeOriginal (≠ nodes.mtime для импортированных)
-lat          double precision                 -- GPS из EXIF (-90..90)
-lng          double precision                 -- GPS из EXIF (-180..180)
-duration_ms  int                              -- видео/аудио длительность
-extra        jsonb not null default '{}'      -- редкие/расширяемые поля по namespace ('exif.iso', 'ai.faces')
+taken_at     timestamptz                      -- EXIF DateTimeOriginal (≠ nodes.mtime for imported)
+lat          double precision                 -- GPS from EXIF (-90..90)
+lng          double precision                 -- GPS from EXIF (-180..180)
+duration_ms  int                              -- video/audio duration
+extra        jsonb not null default '{}'      -- rare/extensible fields by namespace ('exif.iso', 'ai.faces')
 ```
 
-**Индексы:**
-- `gin(extra jsonb_path_ops)` — поиск по произвольным JSONB-полям.
-- `btree(taken_at)` — сортировка фотогалереи по времени съёмки.
-- `btree(lat, lng)` — bounding-box запросы (PostGIS опционально).
+**Indexes:**
+- `gin(extra jsonb_path_ops)` — search over arbitrary JSONB fields.
+- `btree(taken_at)` — photo gallery sort by shoot time.
+- `btree(lat, lng)` — bounding-box queries (PostGIS optional).
 
-**Принцип:** часто запрашиваемые поля — в типизированные колонки (можно индексировать, range-запросы); редкие/кастомные — в `extra` JSONB. Переезд из JSONB в колонку — миграция, когда поле становится горячим.
+**Principle:** frequently queried fields go into typed columns (indexable, range queries); rare/custom ones into the `extra` JSONB. Moving from JSONB to a column is a migration once a field becomes hot.
 
-### `permissions` — только явные права (RBAC)
+### `permissions` — explicit grants only (RBAC)
 
 ```sql
 id         bigserial primary key
 node_id    uuid references nodes(id) on delete cascade
 user_id    uuid references users(id) on delete cascade
-actions    bit(8) not null                  -- битмаска: bit 0=Read, 1=Write, 2=Remove, 3=Admin; 4-7 reserved
+actions    bit(8) not null                  -- bitmask: bit 0=Read, 1=Write, 2=Remove, 3=Admin; 4-7 reserved
 created_at timestamptz default now()
 unique (node_id, user_id)
 ```
 
-Виртуальные `Traverse` тут **не хранятся** — вычисляются на лету (см. [ADR-0003](../adr/0003-rbac-computed-traverse.md), [rbac.md](rbac.md)).
+Virtual `Traverse` is **not stored** here — it is computed on the fly (see [ADR-0003](../adr/0003-rbac-computed-traverse.md), [rbac.md](rbac.md)).
 
-### `share_links` — анонимные временные ссылки (только Web)
+### `share_links` — anonymous temporary links (Web only)
 
 ```sql
-token       text primary key                 -- 32 байта crypto/rand → base64url; PK для O(1) lookup
+token       text primary key                 -- 32 bytes crypto/rand → base64url; PK for O(1) lookup
 node_id     uuid references nodes(id) on delete cascade
-actions     bit(8) not null                  -- те же биты что в permissions; Admin-биты запрещены проверкой в коде
-expires_at  timestamptz not null             -- обязательное поле — бессрочных share-links нет
-max_uses    int                              -- NULL = без ограничения; иначе used_count < max_uses
-used_count  int default 0                    -- инкрементится в Auth при успешной валидации
+actions     bit(8) not null                  -- same bits as in permissions; Admin bits are rejected by code
+expires_at  timestamptz not null             -- mandatory field — there are no perpetual share-links
+max_uses    int                              -- NULL = no limit; otherwise used_count < max_uses
+used_count  int default 0                    -- incremented in Auth on successful validation
 created_by  uuid references users(id)
 created_at  timestamptz default now()
 ```
 
-### `node_settings` — настройки узла (применимы к файлам и папкам)
+### `node_settings` — per-node settings (applicable to files and folders)
 
-Поля наследуются через ltree-lookup ближайшего предка (или самого узла) с не-NULL значением.
+Fields are inherited via ltree lookup of the nearest ancestor (or the node itself) with a non-NULL value.
 
 ```sql
 node_id          uuid primary key references nodes(id) on delete cascade
-max_versions     int                         -- ROADMAP/Later: версионирование
-retention_days   int                         -- ROADMAP/Later: TTL версий
+max_versions     int                         -- ROADMAP/Later: versioning
+retention_days   int                         -- ROADMAP/Later: version TTL
 version_policy   text                        -- ROADMAP/Later: 'off' | 'on_change' | ...
 created_at       timestamptz default now()
 updated_at       timestamptz default now()
 ```
 
-`storage_backend` сюда НЕ выносится — он живёт прямо в `nodes.backend_kind`.
+`storage_backend` is NOT moved here — it lives directly in `nodes.backend_kind`.
 
-### `jobs` — горячая очередь async-индексации
+### `jobs` — hot queue of async indexing
 
 ```sql
 id           bigserial primary key
 node_id      uuid not null references nodes(id) on delete cascade
-kind         text not null                   -- 'hash' (в MVP); 'exif' | 'mime' | 'face' — ROADMAP/Next
+kind         text not null                   -- 'hash' (in MVP); 'exif' | 'mime' | 'face' — ROADMAP/Next
 status       text not null                   -- 'pending' | 'in_progress' | 'failed'
-                                              -- (терминальные 'done' и окончательный 'failed' переезжают в jobs_history)
+                                              -- (terminal 'done' and final 'failed' move to jobs_history)
 attempts     int default 0
 last_error   text
-locked_until timestamptz                     -- lease воркера; sweeper перехватывает зависшие
+locked_until timestamptz                     -- worker lease; the sweeper picks up stuck rows
 created_at   timestamptz default now()
 updated_at   timestamptz default now()
 ```
 
-Воркеры берут задачи через `SELECT ... FOR UPDATE SKIP LOCKED WHERE status='pending' AND kind=$1 ORDER BY created_at LIMIT N`. Индексы: `btree(kind, status, created_at)`, `btree(node_id)`. Таблица остаётся горячей и маленькой — терминальные строки переезжают в `jobs_history`.
+Workers pick up jobs through `SELECT ... FOR UPDATE SKIP LOCKED WHERE status='pending' AND kind=$1 ORDER BY created_at LIMIT N`. Indexes: `btree(kind, status, created_at)`, `btree(node_id)`. The table stays hot and small — terminal rows move to `jobs_history`.
 
-### `jobs_history` — append-only архив завершённых задач
+### `jobs_history` — append-only archive of finished jobs
 
 ```sql
-id            bigint                          -- тот же id что был в jobs (не PK после партиционирования)
-node_id       uuid                            -- без FK: после удаления узла история сохраняется
+id            bigint                          -- the same id that was in jobs (not PK after partitioning)
+node_id       uuid                            -- no FK: history survives node deletion
 kind          text not null
 final_status  text not null                   -- 'done' | 'failed'
 attempts      int not null
-last_error    text                            -- NULL для 'done'
-enqueued_at   timestamptz not null            -- бывший jobs.created_at
+last_error    text                            -- NULL for 'done'
+enqueued_at   timestamptz not null            -- former jobs.created_at
 finished_at   timestamptz not null default now()
-) partition by range (finished_at);           -- помесячные партиции; DROP старых через DROP PARTITION
+) partition by range (finished_at);           -- monthly partitions; old ones dropped via DROP PARTITION
 ```
 
-Индексы на каждой партиции: `btree(node_id, finished_at)`, `btree(kind, final_status)`. Retention — конфигурируемо.
+Indexes per partition: `btree(node_id, finished_at)`, `btree(kind, final_status)`. Retention is configurable.
 
-### `outbox` — журнал незавершённых FS-операций
+### `outbox` — journal of unfinished FS operations
 
-См. [storage.md § Outbox](storage.md#outbox-атомарность-fs--db), [ADR-0002](../adr/0002-outbox-fs-db-atomicity.md).
+See [storage.md § Outbox](storage.md#outbox-fs--db-atomicity), [ADR-0002](../adr/0002-outbox-fs-db-atomicity.md).
 
 ```sql
-id           bigserial primary key            -- порядок вставки = порядок попыток (FIFO в рамках одного executor'а)
+id           bigserial primary key            -- insertion order = attempt order (FIFO within one executor)
 op           text not null                    -- 'create_file' | 'trash' | 'rename' | 'migrate_backend' | ...
-node_id      uuid                             -- nullable: некоторые операции (GC) не привязаны к одному узлу
-payload      jsonb not null                   -- всё для идемпотентного выполнения: upload_id, backend_ref до/после, …
-status       text not null                    -- 'pending' | 'in_progress' | 'failed' (терминальные в outbox_history)
+node_id      uuid                             -- nullable: some operations (GC) are not tied to a single node
+payload      jsonb not null                   -- everything needed for idempotent execution: upload_id, backend_ref before/after, …
+status       text not null                    -- 'pending' | 'in_progress' | 'failed' (terminals go to outbox_history)
 attempts     int default 0
 created_at   timestamptz default now()
-locked_until timestamptz                      -- lease; истёк = executor умер, запись можно подобрать
+locked_until timestamptz                      -- lease; expired = executor died, the row can be picked up
 ```
 
-**Индекс:** `partial btree(status, locked_until) WHERE status IN ('pending','in_progress')` — для быстрого picking активных. Таблица горячая и маленькая по построению; вся история в `outbox_history`.
+**Index:** `partial btree(status, locked_until) WHERE status IN ('pending','in_progress')` — for fast picking of active rows. The table is hot and small by construction; all history is in `outbox_history`.
 
-### `outbox_history` — append-only архив FS-операций
+### `outbox_history` — append-only archive of FS operations
 
 ```sql
 id            bigint
 op            text not null
-node_id       uuid                            -- без FK: запись переживает удаление узла
+node_id       uuid                            -- no FK: the row outlives node deletion
 payload       jsonb not null
 final_status  text not null                   -- 'done' | 'failed'
 attempts      int not null
-last_error    text                            -- NULL для 'done'
+last_error    text                            -- NULL for 'done'
 enqueued_at   timestamptz not null
 finished_at   timestamptz not null default now()
 ) partition by range (finished_at);
 ```
 
-Индексы: `btree(node_id, finished_at)`, `btree(op, final_status, finished_at)`.
+Indexes: `btree(node_id, finished_at)`, `btree(op, final_status, finished_at)`.
 
-### `audit_log` — append-only журнал событий безопасности
+### `audit_log` — append-only journal of security events
 
 ```sql
 audit_log (
   id        bigserial primary key,
-  ts        timestamptz default now(),       -- ключ партиционирования (помесячно)
-  user_id   uuid,                             -- инициатор; NULL для системных событий (cron, GC, sweeper)
+  ts        timestamptz default now(),       -- partition key (monthly)
+  user_id   uuid,                             -- initiator; NULL for system events (cron, GC, sweeper)
   action    text not null,                   -- 'login' | 'login_failed' | 'logout' | 'acl_change' | 'share_*'
                                               -- | 'upload' | 'delete' | 'rename' | 'mkdir' | 'trash_*' | 'backup' | 'recover'
-  node_id   uuid,                             -- для FS-событий; NULL для не-FS (login и т.п.)
-  ip        inet,                             -- NULL для системных
+  node_id   uuid,                             -- for FS events; NULL for non-FS (login, etc.)
+  ip        inet,                             -- NULL for system
   result    text not null,                    -- 'ok' | 'denied' (ACL/rate-limit) | 'error'
-  details   jsonb                             -- произвольный контекст: для 'acl_change' — diff; для 'share_use' — token id; …
+  details   jsonb                             -- arbitrary context: 'acl_change' — diff; 'share_use' — token id; …
 ) partition by range (ts);
 ```
 
-Индексы на каждой партиции: `btree(user_id, ts)`, `btree(node_id, ts)`, `btree(action, ts)`. Retention настраивается (default 12 месяцев).
+Indexes per partition: `btree(user_id, ts)`, `btree(node_id, ts)`, `btree(action, ts)`. Retention is configurable (default 12 months).
 
 ### `users`, `sessions`, `app_passwords`
 
-См. [auth.md](auth.md).
+See [auth.md](auth.md).
 
-## Партиционирование history-таблиц
+## Partitioning of history tables
 
-`outbox_history`, `jobs_history`, `audit_log` партиционированы по месяцу (`PARTITION BY RANGE`).
+`outbox_history`, `jobs_history`, `audit_log` are partitioned by month (`PARTITION BY RANGE`).
 
-Миграция v1 создаёт партиции на текущий месяц + 3 вперёд. **Cron автосоздания будущих партиций — НЕ реализован**, это в [ROADMAP/Next](../../ROADMAP.md). До тех пор оператор должен следить, чтобы партиции не закончились — иначе INSERT'ы будут отказывать.
+Migration v1 creates partitions for the current month + 3 ahead. **A cron for auto-creating future partitions is NOT implemented**; it lives in [ROADMAP/Next](../ROADMAP.md). Until then the operator must ensure partitions do not run out — otherwise INSERTs will fail.
 
-Дроп старых партиций — `DROP PARTITION` (O(1)), не `DELETE` (нагружает autovacuum и не освобождает место).
+Dropping old partitions — `DROP PARTITION` (O(1)), not `DELETE` (which loads autovacuum and does not free space).
 
-## Расширения
+## Extensions
 
-Используются:
-- **`ltree`** — `nodes.path`, gist-index, subtree запросы (`path <@`, `path @>`).
+In use:
+- **`ltree`** — `nodes.path`, gist index, subtree queries (`path <@`, `path @>`).
 - **`citext`** — `users.login` (case-insensitive unique).
-- **`pgcrypto`** — `gen_random_uuid()` для UUID-PK.
+- **`pgcrypto`** — `gen_random_uuid()` for UUID PKs.
 
-Все три включаются в миграции `0001_extensions.up.sql`.
+All three are enabled in the migration `0001_extensions.up.sql`.
 
-## Корневой узел
+## The root node
 
-В миграциях **не создаётся** — это бизнес-операция, выполняется `DBFS.Bootstrap(ctx)` при первом старте процесса. Идемпотентно (NOOP если корень уже есть).
+It is **not created** in migrations — that is a business operation, performed by `DBFS.Bootstrap(ctx)` on the first process start. Idempotent (NOOP if the root already exists).

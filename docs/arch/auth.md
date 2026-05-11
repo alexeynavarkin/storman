@@ -1,70 +1,70 @@
 # Auth: sessions, CSRF, app-passwords, login security
 
-Auth-сервис обслуживает два класса протоколов:
+The auth service serves two classes of protocols:
 - **Web** — cookie sessions + double-submit CSRF.
-- **Non-web** (FTPS, WebDAV, в будущем FUSE/S3/rsync) — HTTP Basic / FTP USER+PASS, secret — основной пароль или app-password.
+- **Non-web** (FTPS, WebDAV, future FUSE/S3/rsync) — HTTP Basic / FTP USER+PASS, with the secret being either the main password or an app-password.
 
-Все non-web протоколы делят одну точку входа `AuthenticateAppPassword(login, secret)`. Полное обоснование — [ADR-0004](../adr/0004-app-passwords-cross-protocol.md).
+All non-web protocols share one entry point `AuthenticateAppPassword(login, secret)`. Full rationale — [ADR-0004](../adr/0004-app-passwords-cross-protocol.md).
 
-## Хранение паролей
+## Password storage
 
-`argon2id`. Дефолт: `memory=64 MiB, iterations=3, parallelism=2`. Параметры tunable через config; в тестах используется быстрый профиль (`MemoryKiB: 8 MiB, Iterations: 1`).
+`argon2id`. Default: `memory=64 MiB, iterations=3, parallelism=2`. Parameters are tunable via config; tests use a fast profile (`MemoryKiB: 8 MiB, Iterations: 1`).
 
-Таблица `users`:
+Table `users`:
 
 ```sql
 users (
   id              uuid primary key,
   login           citext unique not null,           -- case-insensitive unique
   password_hash   text not null,                    -- $argon2id$v=19$m=…,t=…,p=…$<salt>$<hash>
-  totp_secret     bytea,                            -- AEAD-зашифрован; NULL = 2FA off (ROADMAP/Next)
-  failed_attempts int default 0,                    -- подряд неудачных логинов; сброс при успехе
-  locked_until    timestamptz,                      -- backoff; NULL = не заблокирован
+  totp_secret     bytea,                            -- AEAD-encrypted; NULL = 2FA off (ROADMAP/Next)
+  failed_attempts int default 0,                    -- consecutive failed logins; reset on success
+  locked_until    timestamptz,                      -- backoff; NULL = not locked
   created_at      timestamptz default now()
 )
 ```
 
-Параметры argon2id хранятся **внутри** хеша (encoded form). Это позволяет менять параметры без миграции — старые хеши верифицируются со своими параметрами, новые — с актуальными.
+The argon2id parameters live **inside** the hash (encoded form). This lets us change parameters without migration — old hashes verify with their own parameters, new hashes use the current ones.
 
 ## Web sessions
 
-Cookie `storman_session` — HttpOnly + SameSite=Lax. `Secure` флаг ставится **per-request** через helper `secureForRequest(r)` — true если запрос пришёл по HTTPS (own TLS) либо если `cfg.Web.TrustProxyHeaders=true` и `X-Forwarded-Proto: https`. Это позволяет одной cookie работать корректно как с прямым HTTPS-доступом, так и за reverse-proxy.
+Cookie `storman_session` — HttpOnly + SameSite=Lax. The `Secure` flag is set **per-request** via the helper `secureForRequest(r)` — true if the request came over HTTPS (own TLS) or if `cfg.Web.TrustProxyHeaders=true` and `X-Forwarded-Proto: https`. This lets a single cookie work correctly both with direct HTTPS access and behind a reverse proxy.
 
-Таблица `sessions`:
+Table `sessions`:
 
 ```sql
 sessions (
-  id          text primary key,                     -- 32 байта crypto/rand → base64url; сам секрет — PK для O(1) lookup
+  id          text primary key,                     -- 32 bytes crypto/rand → base64url; the secret is the PK for O(1) lookup
   user_id     uuid not null references users(id) on delete cascade,
   created_at  timestamptz default now(),
-  last_seen   timestamptz default now(),            -- обновляется на каждый authenticated request (batched, не на каждый чих)
+  last_seen   timestamptz default now(),            -- updated on every authenticated request (batched, not on every tick)
   expires_at  timestamptz not null,                 -- effective expiry = min(last_seen + idle_timeout, created_at + absolute_timeout)
   ip          inet,
   user_agent  text
 )
 ```
 
-**Sliding expiration:** `expires_at = last_seen + idle_timeout`, не превышает `created_at + absolute_timeout`. Idle-timeout — конфигурируем (дефолт 30 минут активности; absolute — дефолт сутки).
+**Sliding expiration:** `expires_at = last_seen + idle_timeout`, capped by `created_at + absolute_timeout`. Idle-timeout is configurable (default 30 minutes of activity; absolute — default 24 hours).
 
-**Logout** — `DELETE` записи. Logout всех устройств — `DELETE WHERE user_id = $1`.
+**Logout** — `DELETE` the row. Logout-all-devices — `DELETE WHERE user_id = $1`.
 
 ## CSRF
 
 Double-submit cookie:
-- `storman_csrf` — non-HttpOnly cookie (JS должен иметь возможность её прочитать), `SameSite=Lax`.
-- На каждый **мутирующий** запрос фронт читает cookie и шлёт значение в header `X-CSRF-Token`.
-- Middleware `csrfMiddleware` (в `internal/web/server.go`) сверяет cookie ↔ header, отказывает 403 при mismatch.
+- `storman_csrf` — a non-HttpOnly cookie (JS must be able to read it), `SameSite=Lax`.
+- On every **mutating** request the frontend reads the cookie and sends the value in the `X-CSRF-Token` header.
+- Middleware `csrfMiddleware` (in `internal/web/server.go`) checks cookie ↔ header, rejecting with 403 on mismatch.
 
-**Исключения** (не используют CSRF, но всё ещё требуют session):
-- **tus.io** — клиенты не понимают CSRF. Защита через session middleware + per-upload `info.json.user_id` check.
+**Exemptions** (do not use CSRF, but still require a session):
+- **tus.io** — clients do not understand CSRF. Protection comes from the session middleware + a per-upload `info.json.user_id` check.
 
-**Исключения** (вообще не используют session):
-- **WebDAV** — Basic auth с app-password, см. ниже.
-- **share-links** — анонимные, токен в URL.
+**Exemptions** (do not use sessions at all):
+- **WebDAV** — Basic auth with an app-password, see below.
+- **share-links** — anonymous, token in the URL.
 
 ## Security headers
 
-На каждый ответ Web API:
+On every Web API response:
 
 - `Content-Security-Policy: default-src 'self'`
 - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
@@ -73,52 +73,52 @@ Double-submit cookie:
 
 ## Rate limiting / brute-force
 
-`loginLimiter` (см. `internal/web/ratelimit.go`) — token bucket по `(login)` и `(client_ip)`:
+`loginLimiter` (see `internal/web/ratelimit.go`) — a token bucket by `(login)` and `(client_ip)`:
 - **10 attempts per minute per login** (login bucket).
 - **60 attempts per minute per IP** (IP bucket).
 
-На любой неудаче (rate-limit или wrong-password) — `failed_attempts++` в `users`. После порога: `locked_until = now() + backoff(failed_attempts)`. Audit event на каждую неудачу — action=`login_failed`, result=`denied`, details включают `reason`.
+On any failure (rate-limit or wrong password) — `failed_attempts++` in `users`. After the threshold: `locked_until = now() + backoff(failed_attempts)`. An audit event on every failure — action=`login_failed`, result=`denied`, details include `reason`.
 
-**Общий limiter для всех протоколов.** WebDAV-handler (`davAuth`) использует тот же `loginLimiter` — попытки через WebDAV считаются как login attempts. Это значит, что brute-force через WebDAV не «обскачет» web-rate-limit.
+**Shared limiter across protocols.** The WebDAV handler (`davAuth`) uses the same `loginLimiter` — WebDAV attempts count as login attempts. This means a brute-force attack via WebDAV cannot "outrun" the web rate-limit.
 
 ## App-passwords
 
-Для пользователей, которые цепляют FTPS/WebDAV-клиенты, не умеющие 2FA, либо просто не хотят светить основной пароль в каждое приложение.
+For users connecting FTPS/WebDAV clients that do not support 2FA, or who simply do not want to expose the main password to every application.
 
-Таблица `app_passwords`:
+Table `app_passwords`:
 
 ```sql
 app_passwords (
   id         uuid primary key,
   user_id    uuid not null references users(id) on delete cascade,
-  label      text not null,                          -- 'iPhone Files', 'rsync laptop' — только для UI
-  hash       text not null,                          -- argon2id-хеш токена; сам токен показывается один раз
+  label      text not null,                          -- 'iPhone Files', 'rsync laptop' — UI only
+  hash       text not null,                          -- argon2id hash of the token; the token itself is shown once
   created_at timestamptz default now(),
-  last_used  timestamptz                             -- обновляется на login, не на каждый запрос; NULL = ни разу
+  last_used  timestamptz                             -- updated on login, not on every request; NULL = never used
 )
 ```
 
 **Flow:**
-- Пользователь в UI выбирает «Create app-password», вводит label. Бэкенд генерирует токен (`crypto/rand`, base64url), вставляет хеш в `app_passwords`, возвращает **сам токен один раз**. UI показывает «скопируйте сейчас, потом уже не покажу».
-- Клиент (FTPS, WebDAV) шлёт `login + token` через Basic/USER+PASS.
+- In the UI the user picks "Create app-password", enters a label. The backend generates a token (`crypto/rand`, base64url), inserts a hash into `app_passwords`, returns **the token itself once**. The UI shows "copy now, you won't see it again".
+- The client (FTPS, WebDAV) sends `login + token` via Basic / USER+PASS.
 - `AuthenticateAppPassword(login, secret)`:
-  1. Пробует `Authenticate(login, secret)` — основной пароль. Успех → возврат.
-  2. При `ErrPasswordMismatch` → загружает все `app_passwords` для пользователя, проверяет каждый через `VerifyPassword(secret, hash)`. Match → `UPDATE last_used`, reset `failed_attempts`, возврат.
-  3. Иначе — original error.
+  1. Tries `Authenticate(login, secret)` — the main password. Success → return.
+  2. On `ErrPasswordMismatch` → loads all `app_passwords` for the user, verifies each via `VerifyPassword(secret, hash)`. Match → `UPDATE last_used`, reset `failed_attempts`, return.
+  3. Otherwise — original error.
 
-**Brute-force unified:** счётчики `users.failed_attempts` общие. Невозможно «обскакать» web-rate-limit через FTPS — те же 10/мин per login.
+**Brute-force unified:** the `users.failed_attempts` counters are shared. You cannot "outrun" the web rate-limit through FTPS — the same 10/min per login applies.
 
-**Scope:** один app-password = все non-web протоколы пользователя. Per-protocol / per-action scope не реализован (см. [ADR-0004 § Future evolution](../adr/0004-app-passwords-cross-protocol.md)).
+**Scope:** one app-password = all non-web protocols of the user. Per-protocol / per-action scope is not implemented (see [ADR-0004 § Future evolution](../adr/0004-app-passwords-cross-protocol.md)).
 
-**Ревокация:** `DELETE FROM app_passwords WHERE id = $1`. UI показывает список с label + last_used.
+**Revocation:** `DELETE FROM app_passwords WHERE id = $1`. The UI shows a list with label + last_used.
 
 ## 2FA (ROADMAP/Next)
 
-Колонка `users.totp_secret` зарезервирована. План — TOTP через `github.com/pquerna/otp/totp`. `totp_secret` шифруется AEAD-ключом из `config.secrets_key`. При включении 2FA — для FTPS/WebDAV становится обязательным использование app-password (TOTP-клиенты не поддерживаются).
+The column `users.totp_secret` is reserved. The plan — TOTP via `github.com/pquerna/otp/totp`. `totp_secret` is encrypted with the AEAD key from `config.secrets_key`. When 2FA is enabled — for FTPS/WebDAV an app-password becomes mandatory (TOTP clients are not supported).
 
 ## Audit log
 
-Каждая мутирующая операция выпускает `audit.Event`:
+Every mutating operation emits an `audit.Event`:
 
 ```go
 type Event struct {
@@ -127,22 +127,22 @@ type Event struct {
     NodeID  *uuid.UUID
     IP      *netip.Addr
     Result  string                  // 'ok' | 'denied' | 'error'
-    Details map[string]any          // произвольный контекст; в т.ч. "channel": "webdav" для не-web протоколов
+    Details map[string]any          // arbitrary context; includes "channel": "webdav" for non-web protocols
 }
 ```
 
-`Server.audit(ctx, ev)` — nil-safe shortcut, никогда не блокирует и не возвращает ошибку (failed audit не должен ломать business operation).
+`Server.audit(ctx, ev)` is a nil-safe shortcut, never blocks and never returns an error (a failed audit must not break a business operation).
 
-Хранение — таблица `audit_log` (см. [database.md](database.md#audit_log--append-only-журнал-событий-безопасности)), партиционирована по месяцу.
+Storage — the `audit_log` table (see [database.md](database.md#audit_log--append-only-journal-of-security-events)), partitioned by month.
 
-Admin-only endpoint `GET /api/audit?filter=...` — фильтр по user/action/диапазону дат. См. `internal/web/audit.go`.
+Admin-only endpoint `GET /api/audit?filter=...` — filter by user/action/date range. See `internal/web/audit.go`.
 
-## Реализация
+## Implementation
 
 - [internal/auth/users.go](../../internal/auth/users.go) — `UserService`, password hashing, brute-force counters.
 - [internal/auth/sessions.go](../../internal/auth/sessions.go) — `SessionService`, sliding expiration, Logout.
 - [internal/auth/app_passwords.go](../../internal/auth/app_passwords.go) — app-password CRUD + `AuthenticateAppPassword`.
-- [internal/auth/sharelinks.go](../../internal/auth/sharelinks.go) — share-link создание / validation / use.
+- [internal/auth/sharelinks.go](../../internal/auth/sharelinks.go) — share-link creation / validation / use.
 - [internal/web/auth.go](../../internal/web/auth.go) — login/logout/me handlers, CSRF helpers, cookie management.
-- [internal/web/ratelimit.go](../../internal/web/ratelimit.go) — token bucket login limiter.
+- [internal/web/ratelimit.go](../../internal/web/ratelimit.go) — token-bucket login limiter.
 - [internal/audit/audit.go](../../internal/audit/audit.go) — audit Service.
