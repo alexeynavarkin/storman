@@ -1,0 +1,14 @@
+/bin/
+/storman
+*.test
+*.out
+.DS_Store
+.idea/
+.vscode/
+/tmp/
+/dev-data/
+# The SPA bundle is dropped into internal/web/embedded/ during `make build`
+# so it can be embed.FS-included. Only placeholder.html is tracked so the
+# package compiles on a fresh clone before the UI has been built.
+/internal/web/embedded/*
+!/internal/web/embedded/placeholder.html

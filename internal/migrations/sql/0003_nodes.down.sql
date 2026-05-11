@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS nodes;
+DROP TYPE  IF EXISTS node_status;
+DROP TYPE  IF EXISTS node_type;

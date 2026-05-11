@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS outbox_history;
+DROP TABLE IF EXISTS outbox;

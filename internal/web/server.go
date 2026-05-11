@@ -1,0 +1,253 @@
+// Package web implements the HTTP API server. Handlers are mounted under
+// /api/* and read/write FS state through the storage and auth services.
+//
+// Auth model: cookie-based sessions (HttpOnly + SameSite=Lax + Secure when
+// TLS is configured); CSRF protection via double-submit cookie + X-CSRF-Token
+// header on mutating requests. See PLAN.md §3.3.
+package web
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"github.com/alexnav/storman/internal/audit"
+	"github.com/alexnav/storman/internal/auth"
+	"github.com/alexnav/storman/internal/rbac"
+	"github.com/alexnav/storman/internal/storage/dbfs"
+)
+
+
+const sessionCookieName = "storman_session"
+
+// Config controls server-side cookie/security behavior. Mirrors fields from
+// config.WebConfig so the web package stays decoupled from the on-disk format.
+type Config struct {
+	SecureCookies bool
+}
+
+// Server bundles the HTTP handler with its dependencies.
+type Server struct {
+	Config   Config
+	Users    *auth.UserService
+	Sessions *auth.SessionService
+	Perms    *rbac.PermissionService
+	Shares   *auth.ShareLinkService
+	FS       *dbfs.DBFS
+	Audit    *audit.Service
+	// SPA, if non-nil, is mounted at /. It must implement the SPA-fallback
+	// pattern itself (serve assets, fall back to index.html for unknown paths).
+	SPA     http.Handler
+	Handler http.Handler
+
+	// loginLimiter rate-limits /api/auth/login by login name and client IP.
+	// Lazily constructed via setLoginLimiter so test harnesses can disable it.
+	loginLimiter *loginLimiter
+}
+
+// NewServer wires the dependencies into an http.Handler. The returned Server's
+// Handler is ready to be served by http.Server or net/http/httptest.
+func NewServer(cfg Config, users *auth.UserService, sessions *auth.SessionService, perms *rbac.PermissionService, shares *auth.ShareLinkService, fs *dbfs.DBFS, auditSvc *audit.Service) *Server {
+	s := &Server{
+		Config:       cfg,
+		Users:        users,
+		Sessions:     sessions,
+		Perms:        perms,
+		Shares:       shares,
+		FS:           fs,
+		Audit:        auditSvc,
+		loginLimiter: newLoginLimiter(),
+	}
+	s.Handler = s.routes()
+	return s
+}
+
+// audit is a nil-safe shortcut so handlers don't have to guard every call.
+func (s *Server) audit(ctx context.Context, ev audit.Event) {
+	if s.Audit == nil {
+		return
+	}
+	s.Audit.Log(ctx, ev)
+}
+
+// WithSPA returns a new Server that serves the SPA from the given handler at
+// root. Call before reading Handler.
+func (s *Server) WithSPA(h http.Handler) *Server {
+	s.SPA = h
+	s.Handler = s.routes()
+	return s
+}
+
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+
+	// Auth: login is open; logout and me require a session.
+	mux.Handle("POST /api/auth/login", s.chain(s.handleLogin, openRoute))
+	mux.Handle("POST /api/auth/logout", s.chain(s.handleLogout, authedMutate))
+	mux.Handle("GET /api/auth/me", s.chain(s.handleMe, authedRead))
+
+	// Filesystem.
+	mux.Handle("GET /api/fs/stat", s.chain(s.handleStat, authedRead))
+	mux.Handle("GET /api/fs/list", s.chain(s.handleList, authedRead))
+	mux.Handle("POST /api/fs/mkdir", s.chain(s.handleMkdir, authedMutate))
+	mux.Handle("DELETE /api/fs/remove", s.chain(s.handleRemove, authedMutate))
+	mux.Handle("POST /api/fs/rename", s.chain(s.handleRename, authedMutate))
+	mux.Handle("GET /api/fs/read", s.chain(s.handleRead, authedRead))
+	mux.Handle("PUT /api/fs/write", s.chain(s.handleWrite, authedMutate))
+
+	// Permissions + directory.
+	mux.Handle("GET /api/users", s.chain(s.handleUsersList, authedRead))
+	mux.Handle("POST /api/users", s.chain(s.handleUserCreate, authedMutate))
+	mux.Handle("DELETE /api/users/{id}", s.chain(s.handleUserDelete, authedMutate))
+	mux.Handle("POST /api/users/{id}/password", s.chain(s.handleUserPassword, authedMutate))
+	mux.Handle("GET /api/perm/list", s.chain(s.handlePermList, authedRead))
+	mux.Handle("POST /api/perm/grant", s.chain(s.handlePermGrant, authedMutate))
+	mux.Handle("POST /api/perm/revoke", s.chain(s.handlePermRevoke, authedMutate))
+
+	// Trash (admin-only — see trash.go for visibility rationale).
+	mux.Handle("GET /api/trash", s.chain(s.handleTrashList, authedRead))
+	mux.Handle("POST /api/trash/{id}/restore", s.chain(s.handleTrashRestore, authedMutate))
+	mux.Handle("DELETE /api/trash/{id}", s.chain(s.handleTrashPurge, authedMutate))
+
+	// Audit (admin-only).
+	mux.Handle("GET /api/audit", s.chain(s.handleAuditList, authedRead))
+
+	// tus.io resumable uploads (PLAN §3.2). authedRead semantics for HEAD/
+	// OPTIONS (idempotent), authedMutate for POST/PATCH/DELETE — but tus
+	// clients don't speak CSRF, so all tus routes run through authedRead.
+	// Auth is still enforced via session middleware.
+	mux.Handle("OPTIONS /api/tus", s.chain(s.handleTusOptions, authedRead))
+	mux.Handle("POST /api/tus", s.chain(s.handleTusCreate, authedRead))
+	mux.Handle("HEAD /api/tus/{id}", s.chain(s.handleTusHead, authedRead))
+	mux.Handle("PATCH /api/tus/{id}", s.chain(s.handleTusPatch, authedRead))
+	mux.Handle("DELETE /api/tus/{id}", s.chain(s.handleTusDelete, authedRead))
+
+	// Share-links: authenticated CRUD + anonymous use under /share/{token}.
+	mux.Handle("POST /api/share", s.chain(s.handleShareCreate, authedMutate))
+	mux.Handle("GET /api/share/mine", s.chain(s.handleShareListMine, authedRead))
+	mux.Handle("GET /api/share/all", s.chain(s.handleShareListAll, authedRead))
+	mux.Handle("DELETE /api/share/{token}", s.chain(s.handleShareRevoke, authedMutate))
+	mux.Handle("GET /share/{token}/info", s.chain(s.handleShareInfo, openRoute))
+	mux.Handle("GET /share/{token}/download", s.chain(s.handleShareDownload, openRoute))
+	mux.Handle("PUT /share/{token}/upload", s.chain(s.handleShareUpload, openRoute))
+
+	// SPA static + index fallback for any non-/api route.
+	if s.SPA != nil {
+		mux.Handle("GET /", s.SPA)
+	}
+
+	return securityHeaders(mux)
+}
+
+// chain composes a handler with the configured middleware bundle.
+func (s *Server) chain(h http.HandlerFunc, kind routeKind) http.Handler {
+	var wrapped http.Handler = h
+	wrapped = s.recoverMiddleware(wrapped)
+	if kind != openRoute {
+		wrapped = s.sessionMiddleware(wrapped)
+	}
+	if kind == authedMutate {
+		wrapped = s.csrfMiddleware(wrapped)
+	}
+	return wrapped
+}
+
+type routeKind int
+
+const (
+	openRoute    routeKind = iota // no session required (login)
+	authedRead                    // session required, no CSRF
+	authedMutate                  // session required, CSRF required
+)
+
+// sessionMiddleware reads the session cookie, validates the session, and
+// stashes the user record in the request context. Unauthenticated requests
+// are rejected with 401.
+func (s *Server) sessionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil || cookie.Value == "" {
+			writeError(w, r, auth.ErrSessionExpired)
+			return
+		}
+		sess, err := s.Sessions.Validate(r.Context(), cookie.Value)
+		if err != nil {
+			// Any session-validation failure collapses to "please log in"
+			// (401) instead of 404 / 500 — keeps the auth boundary clean.
+			if errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+				writeError(w, r, auth.ErrSessionExpired)
+				return
+			}
+			writeError(w, r, err)
+			return
+		}
+		user, err := s.Users.FindByID(r.Context(), sess.UserID)
+		if err != nil {
+			if errors.Is(err, auth.ErrNotFound) {
+				writeError(w, r, auth.ErrSessionExpired)
+				return
+			}
+			writeError(w, r, err)
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyUser{}, &user)
+		// Best-effort sliding refresh — errors here aren't fatal to the request.
+		_ = s.Sessions.Touch(ctx, sess.ID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// csrfMiddleware enforces the double-submit cookie pattern for mutating
+// requests: the CSRF cookie value must match the X-CSRF-Token header.
+func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(csrfCookieName)
+		if err != nil {
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "csrf cookie missing"})
+			return
+		}
+		if !csrfMatches(cookie.Value, r.Header.Get(csrfHeaderName)) {
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "csrf token mismatch"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// recoverMiddleware turns panics into 500s. Without it, a handler bug would
+// kill the entire process.
+func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rv := recover(); rv != nil {
+				writeError(w, r, errors.New("panic in handler"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// securityHeaders sets defensive response headers on every response. See
+// PLAN.md §3.3.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("Content-Security-Policy", "default-src 'self'")
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ctxKeyUser is the context key for the authenticated user (set by
+// sessionMiddleware, read by handlers).
+type ctxKeyUser struct{}
+
+// UserFromContext returns the authenticated user attached by the session
+// middleware, or nil if the request is not authenticated (which should only
+// happen on openRoute endpoints).
+func UserFromContext(ctx context.Context) *auth.User {
+	u, _ := ctx.Value(ctxKeyUser{}).(*auth.User)
+	return u
+}
