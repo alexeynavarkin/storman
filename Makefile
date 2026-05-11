@@ -47,12 +47,15 @@ build-go:
 # build-ui runs the Vite production build and stages the result into
 # internal/web/embedded/ where //go:embed picks it up. Idempotent — re-runs
 # wipe the previous embedded copy first so removed assets don't linger.
+# placeholder.html is the tracked stand-in needed for //go:embed to succeed
+# on a fresh clone before any build has run; it's preserved across resyncs.
 build-ui: ui/node_modules
 	@echo "==> building SPA"
 	cd ui && npm run build
 	@echo "==> staging dist into internal/web/embedded/"
-	@rm -rf internal/web/embedded
 	@mkdir -p internal/web/embedded
+	@find internal/web/embedded -mindepth 1 -not -name placeholder.html \
+	  -not -path internal/web/embedded -exec rm -rf {} + 2>/dev/null || true
 	@cp -r ui/dist/. internal/web/embedded/
 
 # build-go-only is an alias that intentionally skips the UI build for users
