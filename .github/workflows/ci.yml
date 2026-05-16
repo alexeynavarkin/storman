@@ -61,7 +61,13 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgres://storman:storman@localhost:5432/storman?sslmode=disable
         run: |
-          go test -race -count=1 -coverpkg=./internal/storage/... -coverprofile=cover.out ./... >/dev/null
+          # Exclude storagetest/ and archtest/ — they are test-only helpers,
+          # not production storage code. check-coverage.sh filters them out of
+          # the gate; instrumenting them via -coverpkg adds nothing and breaks
+          # the build on stripped Go 1.25 toolchains that omit `covdata`
+          # (storagetest has no _test.go files but imports `testing`).
+          COVPKGS=$(go list ./internal/storage/... | grep -vE '/(storagetest|archtest)$' | paste -sd, -)
+          go test -race -count=1 -coverpkg="$COVPKGS" -coverprofile=cover.out ./... >/dev/null
           scripts/check-coverage.sh cover.out 70
           go tool cover -func=cover.out | tail -1
 

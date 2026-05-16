@@ -94,8 +94,12 @@ test-storage:
 
 # cover writes a coverage profile for the whole repo, then gates on the
 # aggregate over internal/storage/... via scripts/check-coverage.sh.
+# storagetest/ and archtest/ are test-only helpers; instrumenting them via
+# -coverpkg breaks under stripped Go 1.25 toolchains (missing covdata) and
+# they're filtered from the gate anyway.
 cover:
-	go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./... >/dev/null
+	COVPKGS=$$(go list ./... | grep -vE '/internal/storage/(storagetest|archtest)$$' | paste -sd, -); \
+	go test -race -count=1 -coverpkg="$$COVPKGS" -coverprofile=cover.out ./... >/dev/null
 	@scripts/check-coverage.sh cover.out $(STORAGE_COVER_MIN)
 	@go tool cover -func=cover.out | tail -1
 
