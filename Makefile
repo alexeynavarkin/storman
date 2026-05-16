@@ -9,17 +9,32 @@ DEV_PASSWORD ?= devdevdevdev
 PG_CONTAINER ?= storman-pg
 
 .PHONY: help build test vet tidy clean \
+        test-storage cover stress fuzz pg-clean \
         run-pg stop-pg \
         dev dev-data dev-backend dev-ui dev-down dev-reset \
         docker-build docker-up docker-down release-tag
+
+# Coverage gate threshold (aggregate over internal/storage/...). Starts at
+# 70% which we comfortably hit today; target is 85% (covering GC scheduler
+# and recover-from-disk branches). Push it up as those land.
+STORAGE_COVER_MIN ?= 70
+# How long to fuzz each entry point in `make fuzz`. Override for nightly.
+FUZZ_TIME ?= 30s
+# Stress duration. Default off; CI nightly job overrides.
+STRESS_DURATION ?= 0s
 
 help:
 	@echo "Build & test"
 	@echo "  build         build storman binary"
 	@echo "  test          go test ./..."
+	@echo "  test-storage  go test -race ./internal/storage/..."
+	@echo "  cover         coverage report + gate at $(STORAGE_COVER_MIN)% for internal/storage/..."
+	@echo "  stress        long-running concurrency stress (STRESS_DURATION=5m make stress)"
+	@echo "  fuzz          run fuzz entry points for FUZZ_TIME each (default 30s)"
 	@echo "  vet           go vet ./..."
 	@echo "  tidy          go mod tidy"
 	@echo "  clean         remove ./bin"
+	@echo "  pg-clean      drop leaked test databases (storman_test_*)"
 	@echo ""
 	@echo "Dev stack (data dir: $(DEV_DATA))"
 	@echo "  dev           one-shot: PG + provisioning + backend + Vite UI (HMR)"
@@ -71,6 +86,39 @@ build-go-only: build-go
 
 test:
 	go test $(PKG)
+
+# test-storage targets the durability layer specifically. Always runs under
+# -race because every bug we've ever seen here was a concurrency one.
+test-storage:
+	go test -race -count=1 ./internal/storage/...
+
+# cover writes a coverage profile for the whole repo, then gates on the
+# aggregate over internal/storage/... via scripts/check-coverage.sh.
+cover:
+	go test -race -count=1 -coverpkg=./... -coverprofile=cover.out ./... >/dev/null
+	@scripts/check-coverage.sh cover.out $(STORAGE_COVER_MIN)
+	@go tool cover -func=cover.out | tail -1
+
+# stress drives concurrent goroutines on disjoint subtrees for the configured
+# duration and verifies AssertConsistent at the end. Default duration is 0
+# (skip); override via the env var.
+stress:
+	go test -race -run=TestStress -timeout=20m ./internal/storage/dbfs/... -stress=$(STRESS_DURATION)
+
+# fuzz runs every fuzz entry point in storage for FUZZ_TIME each. Sequential
+# so output is greppable; nightly CI runs longer (FUZZ_TIME=2m).
+fuzz:
+	go test -run=^$$ -fuzz=FuzzCleanRel -fuzztime=$(FUZZ_TIME) ./internal/storage/flat/
+	go test -run=^$$ -fuzz=FuzzSplitPath -fuzztime=$(FUZZ_TIME) ./internal/storage/dbfs/
+
+# pg-clean drops any storman_test_* databases left behind by interrupted runs.
+# Safe to run any time; databases currently in use are protected by Postgres.
+pg-clean:
+	@PSQL_DSN="$${TEST_POSTGRES_DSN:-postgres://storman:storman@localhost:5432/postgres?sslmode=disable}"; \
+	docker exec $(PG_CONTAINER) psql "postgres://storman:storman@localhost:5432/postgres?sslmode=disable" -tAc \
+	  "SELECT 'DROP DATABASE IF EXISTS \"' || datname || '\";' FROM pg_database WHERE datname LIKE 'storman_test_%'" \
+	  | docker exec -i $(PG_CONTAINER) psql "postgres://storman:storman@localhost:5432/postgres?sslmode=disable" || true
+	@echo "==> pg-clean done"
 
 vet:
 	go vet $(PKG)

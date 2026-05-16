@@ -3,6 +3,7 @@ package flat
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -296,6 +297,65 @@ func TestWrongBackendKindRejected(t *testing.T) {
 	_, err := b.OpenRead(ctx, storage.BackendRef{Kind: "cdc", Data: "x"})
 	if !errors.Is(err, storage.ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestReadAtBoundary(t *testing.T) {
+	b, _, _ := newTestBackend(t)
+	ctx := context.Background()
+	ref, _ := b.Allocate(ctx, storage.AllocHint{LogicalPath: "x"})
+	mustCommit(t, b, ref, storage.WriteCreate, []byte("abcdef")) // size = 6
+
+	r, err := b.OpenRead(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	// Read entirely inside the file: no error, full count.
+	mid := make([]byte, 3)
+	n, err := r.ReadAt(mid, 1)
+	if err != nil {
+		t.Fatalf("mid ReadAt: %v", err)
+	}
+	if n != 3 || string(mid) != "bcd" {
+		t.Errorf("mid: n=%d content=%q", n, mid)
+	}
+
+	// Read straddling EOF: short return + io.EOF.
+	straddle := make([]byte, 4)
+	n, err = r.ReadAt(straddle, 4)
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("straddle: err=%v (want io.EOF)", err)
+	}
+	if n != 2 || string(straddle[:n]) != "ef" {
+		t.Errorf("straddle: n=%d content=%q", n, straddle[:n])
+	}
+
+	// Read entirely past EOF: zero bytes + io.EOF.
+	past := make([]byte, 4)
+	n, err = r.ReadAt(past, 100)
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("past EOF: err=%v (want io.EOF)", err)
+	}
+	if n != 0 {
+		t.Errorf("past EOF: n=%d (want 0)", n)
+	}
+
+	// Read exactly at EOF (offset == size): zero bytes + io.EOF.
+	atEOF := make([]byte, 4)
+	n, err = r.ReadAt(atEOF, int64(r.Size()))
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("at EOF: err=%v (want io.EOF)", err)
+	}
+	if n != 0 {
+		t.Errorf("at EOF: n=%d (want 0)", n)
+	}
+
+	// Negative offset: must return an error (any non-nil), not silently succeed.
+	neg := make([]byte, 4)
+	if _, err := r.ReadAt(neg, -1); err == nil {
+		t.Errorf("negative offset should error")
 	}
 }
 

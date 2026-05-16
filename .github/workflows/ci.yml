@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly at 03:00 UTC — stress + fuzz the storage layer.
+    - cron: '0 3 * * *'
 
 jobs:
   test:
@@ -50,9 +53,49 @@ jobs:
       - name: go test
         env:
           TEST_POSTGRES_DSN: postgres://storman:storman@localhost:5432/storman?sslmode=disable
-        # Tests share a single test DB and reset its schema on each Pool() —
-        # serialise packages with -p 1 to avoid clobbering one another.
-        run: go test -p 1 ./...
+        # testpg.Pool clones a per-test database from a process-shared template
+        # (internal/db/testpg/testpg.go) so packages can run in parallel.
+        run: go test -race -count=1 ./...
+
+      - name: storage coverage gate
+        env:
+          TEST_POSTGRES_DSN: postgres://storman:storman@localhost:5432/storman?sslmode=disable
+        run: |
+          go test -race -count=1 -coverpkg=./internal/storage/... -coverprofile=cover.out ./... >/dev/null
+          scripts/check-coverage.sh cover.out 70
+          go tool cover -func=cover.out | tail -1
+
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: storman
+          POSTGRES_PASSWORD: storman
+          POSTGRES_DB: storman
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U storman -d storman"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: stress
+        env:
+          TEST_POSTGRES_DSN: postgres://storman:storman@localhost:5432/storman?sslmode=disable
+        run: make stress STRESS_DURATION=5m
+
+      - name: fuzz
+        run: make fuzz FUZZ_TIME=2m
 
   docker-build:
     runs-on: ubuntu-latest

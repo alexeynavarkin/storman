@@ -1,0 +1,381 @@
+# 2026/05/16 21:19:35.461588 [TestPropertyStateMachine] [rapid] draw action: "mkdir"
+# 2026/05/16 21:19:35.461608 [TestPropertyStateMachine] [rapid] draw ex: 2
+# 2026/05/16 21:19:35.461610 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.461612 [TestPropertyStateMachine] [rapid] draw leaf: "a"
+# 2026/05/16 21:19:35.464558 [TestPropertyStateMachine] [rapid] draw action: "write"
+# 2026/05/16 21:19:35.464578 [TestPropertyStateMachine] [rapid] draw ex: 8
+# 2026/05/16 21:19:35.464580 [TestPropertyStateMachine] [rapid] draw parent: 1
+# 2026/05/16 21:19:35.464581 [TestPropertyStateMachine] [rapid] draw leaf: "c"
+# 2026/05/16 21:19:35.486727 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.486736 [TestPropertyStateMachine] [rapid] draw ex: 0
+# 2026/05/16 21:19:35.486745 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.487675 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.487679 [TestPropertyStateMachine] [rapid] draw ex: 3
+# 2026/05/16 21:19:35.487680 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.488649 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.488654 [TestPropertyStateMachine] [rapid] draw ex: 9
+# 2026/05/16 21:19:35.488655 [TestPropertyStateMachine] [rapid] draw parent: 1
+# 2026/05/16 21:19:35.488656 [TestPropertyStateMachine] [rapid] draw leaf: "y"
+# 2026/05/16 21:19:35.490448 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.490451 [TestPropertyStateMachine] [rapid] draw ex: 0
+# 2026/05/16 21:19:35.490455 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.490456 [TestPropertyStateMachine] [rapid] draw leaf: "a"
+# 2026/05/16 21:19:35.498843 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.498851 [TestPropertyStateMachine] [rapid] draw ex: 8
+# 2026/05/16 21:19:35.498852 [TestPropertyStateMachine] [rapid] draw parent: 0
+# 2026/05/16 21:19:35.498853 [TestPropertyStateMachine] [rapid] draw leaf: "c"
+# 2026/05/16 21:19:35.499839 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.499841 [TestPropertyStateMachine] [rapid] draw ex: 0
+# 2026/05/16 21:19:35.499842 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.499842 [TestPropertyStateMachine] [rapid] draw leaf: "y"
+# 2026/05/16 21:19:35.501074 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.501075 [TestPropertyStateMachine] [rapid] draw ex: 0
+# 2026/05/16 21:19:35.501076 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.501077 [TestPropertyStateMachine] [rapid] draw leaf: "a"
+# 2026/05/16 21:19:35.502277 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.502279 [TestPropertyStateMachine] [rapid] draw ex: 1
+# 2026/05/16 21:19:35.502279 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.502280 [TestPropertyStateMachine] [rapid] draw leaf: "a"
+# 2026/05/16 21:19:35.503509 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.503512 [TestPropertyStateMachine] [rapid] draw ex: 8
+# 2026/05/16 21:19:35.503516 [TestPropertyStateMachine] [rapid] draw parent: 0
+# 2026/05/16 21:19:35.503517 [TestPropertyStateMachine] [rapid] draw leaf: "a"
+# 2026/05/16 21:19:35.504444 [TestPropertyStateMachine] [rapid] draw action: "mkdir"
+# 2026/05/16 21:19:35.504446 [TestPropertyStateMachine] [rapid] draw ex: 3
+# 2026/05/16 21:19:35.504447 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.504447 [TestPropertyStateMachine] [rapid] draw leaf: "x"
+# 2026/05/16 21:19:35.506111 [TestPropertyStateMachine] [rapid] draw action: "write"
+# 2026/05/16 21:19:35.506113 [TestPropertyStateMachine] [rapid] draw ex: 7
+# 2026/05/16 21:19:35.506114 [TestPropertyStateMachine] [rapid] draw parent: 1
+# 2026/05/16 21:19:35.506115 [TestPropertyStateMachine] [rapid] draw leaf: "x"
+# 2026/05/16 21:19:35.514125 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.514131 [TestPropertyStateMachine] [rapid] draw ex: 3
+# 2026/05/16 21:19:35.514131 [TestPropertyStateMachine] [rapid] draw idx: 2
+# 2026/05/16 21:19:35.515398 [TestPropertyStateMachine] [rapid] draw action: "mkdir"
+# 2026/05/16 21:19:35.515400 [TestPropertyStateMachine] [rapid] draw ex: 2
+# 2026/05/16 21:19:35.515401 [TestPropertyStateMachine] [rapid] draw idx: 1
+# 2026/05/16 21:19:35.516870 [TestPropertyStateMachine] [rapid] draw action: "mkdir"
+# 2026/05/16 21:19:35.516873 [TestPropertyStateMachine] [rapid] draw ex: 9
+# 2026/05/16 21:19:35.516874 [TestPropertyStateMachine] [rapid] draw parent: 0
+# 2026/05/16 21:19:35.516875 [TestPropertyStateMachine] [rapid] draw leaf: "leaf"
+# 2026/05/16 21:19:35.518924 [TestPropertyStateMachine] [rapid] draw action: "write"
+# 2026/05/16 21:19:35.518929 [TestPropertyStateMachine] [rapid] draw ex: 1
+# 2026/05/16 21:19:35.518930 [TestPropertyStateMachine] [rapid] draw idx: 2
+# 2026/05/16 21:19:35.520369 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.520371 [TestPropertyStateMachine] [rapid] draw ex: 7
+# 2026/05/16 21:19:35.520372 [TestPropertyStateMachine] [rapid] draw parent: 2
+# 2026/05/16 21:19:35.520373 [TestPropertyStateMachine] [rapid] draw leaf: "img.jpg"
+# 2026/05/16 21:19:35.521474 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.521476 [TestPropertyStateMachine] [rapid] draw ex: 2
+# 2026/05/16 21:19:35.521477 [TestPropertyStateMachine] [rapid] draw idx: 0
+# 2026/05/16 21:19:35.522237 [TestPropertyStateMachine] [rapid] draw action: "write"
+# 2026/05/16 21:19:35.522239 [TestPropertyStateMachine] [rapid] draw ex: 4
+# 2026/05/16 21:19:35.522239 [TestPropertyStateMachine] [rapid] draw idx: 3
+# 2026/05/16 21:19:35.523598 [TestPropertyStateMachine] [rapid] draw action: "read"
+# 2026/05/16 21:19:35.523600 [TestPropertyStateMachine] [rapid] draw ex: 0
+# 2026/05/16 21:19:35.523600 [TestPropertyStateMachine] [rapid] draw idx: 3
+# 2026/05/16 21:19:35.524761 [TestPropertyStateMachine] [rapid] draw action: "mkdir"
+# 2026/05/16 21:19:35.524763 [TestPropertyStateMachine] [rapid] draw ex: 5
+# 2026/05/16 21:19:35.524764 [TestPropertyStateMachine] [rapid] draw idx: 3
+# 2026/05/16 21:19:35.526264 [TestPropertyStateMachine] [rapid] draw action: "stat"
+# 2026/05/16 21:19:35.526270 [TestPropertyStateMachine] [rapid] draw ex: 1
+# 2026/05/16 21:19:35.526270 [TestPropertyStateMachine] [rapid] draw idx: 3
+# 2026/05/16 21:19:35.527422 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.527424 [TestPropertyStateMachine] [rapid] draw ex: 6
+# 2026/05/16 21:19:35.527424 [TestPropertyStateMachine] [rapid] draw idx: 2
+# 2026/05/16 21:19:35.535003 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.535006 [TestPropertyStateMachine] [rapid] draw ex: 7
+# 2026/05/16 21:19:35.535007 [TestPropertyStateMachine] [rapid] draw parent: 0
+# 2026/05/16 21:19:35.535007 [TestPropertyStateMachine] [rapid] draw leaf: "img.jpg"
+# 2026/05/16 21:19:35.536160 [TestPropertyStateMachine] [rapid] draw action: "remove"
+# 2026/05/16 21:19:35.536163 [TestPropertyStateMachine] [rapid] draw ex: 5
+# 2026/05/16 21:19:35.536163 [TestPropertyStateMachine] [rapid] draw idx: 1
+# 2026/05/16 21:19:35.542915 [TestPropertyStateMachine] consistency violations:
+#   - trash dir 1e609dca-b528-4dc2-b03c-1e8b7c945de2 has no payload/ subtree: stat /var/folders/4d/7tsvps490y3g8m2sp4782sz00000gn/T/storman-property-3718626132/meta-storage/trash/1e609dca-b528-4dc2-b03c-1e8b7c945de2/payload: no such file or directory
+# 
+v0.4.8#3880890587471494193
+0x13811eaac8d189
+0x1e43639fa3804f
+0x0
+0x14971ea158044c
+0x12eb0ef9bace64
+0x2
+0x12955c1fe319da
+0x1241605f565f64
+0x0
+0xdfcd49b47390e
+0xe
+0x0
+0x7be2433afbb6e
+0x82f8b8bf48ef2
+0x4
+0x19cdbc7f4381b7
+0xa1143b3e48476
+0xe
+0x8
+0x6676c982ccadb
+0x1ef9b4166b5ff4
+0x1
+0xf2ce2dbfb27a9
+0x2
+0x16d84e6d28a7cd
+0x16323a9a967068
+0x1
+0xf087edb808d69
+0x1a39d9d53f382f
+0xf
+0xa
+0x0
+0xf3d1e13f198c8
+0x122a535978404c
+0x0
+0x9b5994c23eb14
+0x8faa29482e11
+0x1
+0x1df9b16152769e
+0x3e9e2ef6b8004
+0x3
+0x7bef8e440f5a2
+0x3b009b51ddee1
+0x0
+0x17f39085462871
+0x10e6d8dba2b6d3
+0x2
+0xbfc59e3e09891
+0x9fe3c2c732a7a
+0x9
+0x1e7d012e415a93
+0x5897e631ddea0
+0x1
+0x18479e831059ae
+0xe
+0x4
+0x1ee28cafa1b517
+0x1668d060f5a19d
+0x5
+0x2
+0x1adecc05c0739c
+0x74f270103681
+0x0
+0xd462311f3453e
+0x8d1e93ebf3831
+0x0
+0xf1279db77f5c4
+0x0
+0x1e4f06a6b964a5
+0xfb09cbf2ce21c
+0x1
+0x1cc4a86a4943fa
+0x186e000e0bd6e4
+0x8
+0x5a4bd99c8e911
+0x55c0dd307ec3c
+0x0
+0x6a0650f44b8b7
+0x2
+0xd2e50fc290e58
+0x198f7d0d994d73
+0x6
+0x2
+0x1defbc0c757920
+0xc40349204849
+0x0
+0x188bc6f8ba156e
+0x1d3e7c1ff27134
+0x0
+0x166c9b31c8c3a6
+0x4
+0x1f26708d767216
+0x1bf5e76d1bb9a4
+0x7
+0x5
+0x7
+0x6
+0x2
+0x7ccd463a88437
+0x19f4a44389737
+0x0
+0x116de42e9073ee
+0x16f94ad16a189a
+0x0
+0x11f0583c1c8f3c
+0x0
+0x7049aecd2f1fa
+0xb61300189c880
+0x6
+0x2
+0x19a1900471852e
+0x13765dacaa35ae
+0xe
+0x1
+0x729dc5d64da09
+0x850e082a521b4
+0x0
+0xd9ab9bae139a9
+0x0
+0xb3b873581ba65
+0x17ac5483940e1
+0x1
+0x1071f37e23c412
+0x1230afdd65a62b
+0xc
+0x8
+0x11a66f4f7b7601
+0x4ad8ba416c10e
+0x0
+0x19df0e8121696
+0x0
+0x18c7ff8f9db709
+0x18406a4f26a806
+0x7
+0x0
+0x151d9f9513c214
+0x10cd79af85a82f
+0xa
+0x3
+0xd6a517d903344
+0xf305bcede90d8
+0x0
+0x5d9d65e48201b
+0x3
+0x1074f01097f449
+0x1a3064ece00b71
+0x4
+0xde81fffebb87c
+0x1002cff0e9a538
+0x7
+0x188925a7a15e1c
+0xa9b07aa42b842
+0x1
+0x115ae2fb7b64bd
+0x3
+0x158bbf27367fe9
+0x10b76910829b57
+0x7
+0x1
+0x1871dbe9067fa4
+0x7018ff7e754a7
+0x3
+0x6af18e23028b7
+0x10b80e692b5176
+0x2
+0x4d836f1ef7486
+0xda4f3dcaeb53
+0x0
+0xbe02d4a09df17
+0x1c6d34243adc41
+0xf
+0x2
+0x539b1d133fd1c
+0x1aa11ed20e9e71
+0x1
+0x1647d39b5609d4
+0x5e38966d7ba2b
+0x0
+0x1dabf10afbf0a7
+0x1fb51e4cabf434
+0xffffffffffffffff
+0x1293009608c0cc
+0x1cd7ac164b251e
+0x0
+0x18a2c9d6d1d896
+0x7
+0x666ae384fbcd3
+0x1f7bf72c6070c1
+0xffffffffffffffff
+0x1a761d279c9a
+0x378a9932bac55
+0x1
+0x676cd18642715
+0x10a2f3a19d320c
+0x2
+0x1254b2ceb796a
+0x12ac6bb0a041a9
+0x1
+0x431dde0752063
+0x1299ba23322d7f
+0x7
+0x15a19c980cd983
+0x15bc328310939d
+0x3
+0x2
+0x14bc45cd77379a
+0xa
+0x1936184eb2868b
+0x42f0c7ab6de2
+0x1
+0x16063c6a15a6c4
+0x1932cc5854702b
+0x2
+0xb52c907ce222e
+0x133cdbf7c08e9
+0x0
+0x1d74f1d5a2b1bf
+0xb55b50e420f6b
+0x4
+0x4f2c2b04534f7
+0x17147fa46b7e39
+0xe
+0xc
+0x4
+0x828cfbceeb854
+0xea92bdab00fa8
+0x3
+0x1865607664b275
+0x159ed4284c6b3e
+0x1
+0x1a4e36e25ea67
+0x54db60da8e446
+0x0
+0x8b6b471fb9b59
+0x1d39492565ab19
+0x3
+0x2d41ffa7e72e0
+0x1c2a5fb648234f
+0x0
+0x378ee5e791b04
+0x15124943c3eb07
+0x5
+0xd0387fcc724b5
+0xafb4057f332b1
+0x3
+0x19eb4f0c134d25
+0x1594c355dd88d0
+0x3
+0x8b1550925e3f5
+0xe8a723531bc4d
+0x1
+0x5c8ef50428a89
+0x47f6dd63131c0
+0x3
+0xf8aa615b8acd6
+0xa137845201c2c
+0x2
+0x7ccc79d27a4d2
+0xbca53d711251f
+0xd
+0x6
+0xac7389fbc8d12
+0x123fb1e34b4056
+0x2
+0x6d8f2414ffc5a
+0x1f22a00e47751b
+0x2
+0x249e348ae7305
+0xaba8ff61c7c2b
+0x7
+0x1ecf38002eb294
+0x156a74dc1ecd7a
+0x0
+0x11b365ca0f5091
+0xa
+0x1b47a66316c6f4
+0xe950473ca5073
+0x5
+0x2
+0x1e703c0ace7943
+0xbd1ec20422d63
+0x5
+0xfe30b1e1acc35
+0x2d1b70521d5fd
+0x1

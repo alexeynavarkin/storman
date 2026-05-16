@@ -294,24 +294,10 @@ func (s *Server) handleShareUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // statByID resolves a node from its UUID. share_links references nodes by id,
-// but FS.OpenRead/Stat want logical paths — bridge by reconstructing the
-// node's path through the pool, then handing it to FS.Stat so caches and ACL
-// invariants are reused.
+// but FS.OpenRead/Stat want logical paths — bridge via FS.PathByID so the
+// recursive ltree walk lives behind the storage boundary (ADR-0001).
 func (s *Server) statByID(ctx context.Context, id uuid.UUID) (*storage.NodeInfo, error) {
-	var logical string
-	err := s.Users.Pool().QueryRow(ctx,
-		`WITH RECURSIVE chain AS (
-		   SELECT id, parent_id, name, 0 AS depth
-		     FROM nodes WHERE id = $1 AND deleted_at IS NULL
-		   UNION ALL
-		   SELECT n.id, n.parent_id, n.name, c.depth + 1
-		     FROM nodes n
-		     JOIN chain c ON c.parent_id = n.id
-		    WHERE n.deleted_at IS NULL
-		 )
-		 SELECT COALESCE('/' || string_agg(name, '/' ORDER BY depth DESC), '/')
-		 FROM chain
-		 WHERE name <> ''`, id).Scan(&logical)
+	logical, err := s.FS.PathByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("locate node %s: %w", id, err)
 	}

@@ -19,7 +19,7 @@ func (fs *DBFS) List(ctx context.Context, path string) ([]storage.NodeInfo, erro
 	rows, err := fs.pool.Query(ctx,
 		`SELECT `+nodeCols+`
 		 FROM nodes
-		 WHERE parent_id = $1 AND deleted_at IS NULL
+		 WHERE parent_id = $1 AND deleted_at IS NULL AND status = 'ready'
 		 ORDER BY type DESC, name ASC`,
 		parent.ID)
 	if err != nil {

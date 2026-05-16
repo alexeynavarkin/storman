@@ -60,7 +60,10 @@ func (fs *DBFS) Mkdir(ctx context.Context, path string, opts storage.MkdirOpts) 
 	})
 }
 
-// insertDir inserts a new directory node as child of parent.
+// insertDir inserts a new directory node as child of parent. Concurrent
+// Mkdirs for the same path race past the in-tx childNode check; the partial
+// unique index on (parent_id, name) catches the second one and we map the
+// SQL error back to ErrExists for a single canonical signal.
 func (fs *DBFS) insertDir(ctx context.Context, tx pgx.Tx, parent nodeRow, name string) (nodeRow, error) {
 	id := uuid.New()
 	childPath := ltreeAppend(parent.Path, ltreeLabel(id))
@@ -69,6 +72,9 @@ func (fs *DBFS) insertDir(ctx context.Context, tx pgx.Tx, parent nodeRow, name s
 		 VALUES ($1, $2, $3::ltree, $4, 'dir', 'ready')`,
 		id, parent.ID, childPath, name)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nodeRow{}, errf(storage.ErrExists, "%q already exists", name)
+		}
 		return nodeRow{}, fmt.Errorf("insert dir %q: %w", name, err)
 	}
 	return nodeRow{

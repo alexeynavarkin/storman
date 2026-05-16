@@ -74,6 +74,13 @@ func (fs *DBFS) Remove(ctx context.Context, path string) error {
 		return err
 	}
 
+	// Crash injection point (test-only). The DB-side soft-delete has
+	// committed; nothing has moved on disk yet. RecoverPending must finish
+	// the rename and write the meta sidecar.
+	if err := fs.fireHook(HookBeforeTrashRename); err != nil {
+		return err
+	}
+
 	// Drive the on-disk move synchronously now that the DB commit is durable.
 	// If this fails or the process crashes here, RecoverPending will pick the
 	// row up at next startup. The executor is idempotent — re-running is safe.

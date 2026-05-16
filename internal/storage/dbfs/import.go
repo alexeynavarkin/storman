@@ -104,6 +104,9 @@ func (fs *DBFS) ImportPath(ctx context.Context, logical, srcAbsPath string) erro
 			`INSERT INTO nodes (id, parent_id, path, name, type, backend_kind, backend_ref, status)
 			 VALUES ($1, $2, $3::ltree, $4, 'file', $5, $6, 'pending')`,
 			nodeID, parent.ID, nodePath, name, ref.Kind, ref.Data); err != nil {
+			if isUniqueViolation(err) {
+				return errf(storage.ErrExists, "%q already exists", logical)
+			}
 			return fmt.Errorf("insert pending node: %w", err)
 		}
 		payload := createFilePayload{NodeID: nodeID, BackendKind: ref.Kind, BackendRef: ref.Data}

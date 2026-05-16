@@ -78,6 +78,9 @@ func (fs *DBFS) OpenWrite(ctx context.Context, path string, opts storage.WriteOp
 			`INSERT INTO nodes (id, parent_id, path, name, type, backend_kind, backend_ref, status)
 			 VALUES ($1, $2, $3::ltree, $4, 'file', $5, $6, 'pending')`,
 			nodeID, parent.ID, nodePath, name, ref.Kind, ref.Data); err != nil {
+			if isUniqueViolation(err) {
+				return errf(storage.ErrExists, "%q already exists", path)
+			}
 			return fmt.Errorf("insert pending node: %w", err)
 		}
 
@@ -86,6 +89,12 @@ func (fs *DBFS) OpenWrite(ctx context.Context, path string, opts storage.WriteOp
 		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+
+	// Crash injection point (test-only).
+	if err := fs.fireHook(HookAfterCreateTx); err != nil {
+		_ = fs.rollbackPending(context.Background(), nodeID, outboxID, "hook AfterCreateTx: "+err.Error())
 		return nil, err
 	}
 
@@ -143,6 +152,13 @@ func (w *fsWriter) Commit() error {
 	// inner.Close after Commit is a no-op per FlatFile semantics; call it to
 	// release the fd.
 	if err := w.inner.Close(); err != nil {
+		return err
+	}
+
+	// Crash injection point (test-only). At this moment the bytes are at
+	// the target path but the node is still 'pending' — exactly the state
+	// RecoverPending must heal on the next startup.
+	if err := w.fs.fireHook(HookAfterBackendCommit); err != nil {
 		return err
 	}
 

@@ -7,6 +7,7 @@ package dbfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -37,6 +38,9 @@ type DBFS struct {
 	// trashDir is <data-dir>/meta-storage/trash; subtrees being soft-deleted
 	// are renamed into trashDir/<trash_uuid>/payload by the trash executor.
 	trashDir string
+	// hook is the test-only fault-injection callback (see hooks.go). nil in
+	// production — the fireHook fast path is a single nil check.
+	hook HookFn
 }
 
 // New constructs a DBFS. The provided backends are registered by their Name();
@@ -81,4 +85,17 @@ func ltreeAppend(parent, child string) string {
 // errf wraps a sentinel error with formatted context.
 func errf(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{sentinel}, args...)...)
+}
+
+// isUniqueViolation reports whether err is a Postgres unique_violation
+// (SQLSTATE 23505). The partial unique index on nodes(parent_id, name)
+// fires when two concurrent operations race for the same logical path
+// past the in-tx childNode check; callers translate that into ErrExists
+// so the FS surfaces a single canonical signal.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
 }

@@ -28,7 +28,7 @@ services:
       retries: 10
 
   storman:
-    image: ${STORMAN_IMAGE:-ghcr.io/alexnav/storman:latest}
+    image: ${STORMAN_IMAGE:-ghcr.io/alexeynavarkin/storman:latest}
     restart: unless-stopped
     depends_on:
       postgres:
