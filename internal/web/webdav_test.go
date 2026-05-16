@@ -244,6 +244,65 @@ func TestWebDAVRespectsACL(t *testing.T) {
 	}
 }
 
+// TestWebDAVAuthCacheSurvivesBurst reproduces the macOS Finder pattern that
+// previously broke folder operations: many parallel requests with the same
+// valid credentials. With the auth cache in place the limiter should not trip.
+func TestWebDAVAuthCacheSurvivesBurst(t *testing.T) {
+	h := newDavHarness(t)
+
+	const burst = 50
+	type result struct{ status int }
+	results := make(chan result, burst)
+	for i := 0; i < burst; i++ {
+		go func() {
+			resp := h.dav(http.MethodOptions, "/", nil, false, nil)
+			resp.Body.Close()
+			results <- result{status: resp.StatusCode}
+		}()
+	}
+	for i := 0; i < burst; i++ {
+		r := <-results
+		if r.status == http.StatusTooManyRequests {
+			t.Fatalf("burst request %d hit rate limiter despite valid creds", i)
+		}
+	}
+
+	// No webdav rate_limited audit should have been emitted for our login.
+	rows, err := h.audit.List(context.Background(), audit.Filter{Action: audit.ActionLoginFailed, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if ch, _ := r.Details["channel"].(string); ch != "webdav" {
+			continue
+		}
+		if reason, _ := r.Details["reason"].(string); reason == "rate_limited" {
+			t.Errorf("unexpected rate_limited audit during valid-credentials burst")
+		}
+	}
+}
+
+// TestWebDAVInvalidCredsStillRateLimited confirms the cache does not weaken
+// brute-force protection: 50 wrong-password attempts must still trip the
+// limiter and generate audit events.
+func TestWebDAVInvalidCredsStillRateLimited(t *testing.T) {
+	h := newDavHarness(t)
+
+	denied := 0
+	for i := 0; i < 50; i++ {
+		resp := h.dav(http.MethodOptions, "/", nil, false, func(r *http.Request) {
+			r.SetBasicAuth(h.login, "wrong-token")
+		})
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			denied++
+		}
+	}
+	if denied == 0 {
+		t.Error("expected the limiter to trip on a sustained wrong-password burst")
+	}
+}
+
 func TestWebDAVRangedGet(t *testing.T) {
 	h := newDavHarness(t)
 	body := []byte("abcdefghijklmnopqrstuvwxyz")

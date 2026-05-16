@@ -56,14 +56,33 @@ func (s *Server) davAuth(next http.Handler) http.Handler {
 		if ip != nil {
 			ipStr = ip.String()
 		}
+
+		// Cache hit: skip the rate limiter and the DB-backed authenticator.
+		// macOS Finder issues many parallel WebDAV requests per user action,
+		// each with the same Basic credentials — without this cache the chatty
+		// pattern would exhaust the 10/min/login bucket within seconds and
+		// rip apart multi-step sequences like LOCK → MOVE → UNLOCK.
+		cacheKey := davAuthKey(login, secret, ipStr)
+		if cached, ok := s.davAuthCache.Get(cacheKey); ok {
+			ctx := context.WithValue(r.Context(), ctxKeyUser{}, &cached)
+			ctx = storage.WithActor(ctx, cached.ID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		if allow, retry := s.loginLimiter.Allow(login, ipStr); !allow {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds()+1)))
-			s.audit(r.Context(), audit.Event{
-				Action:  audit.ActionLoginFailed,
-				IP:      ip,
-				Result:  audit.ResultDenied,
-				Details: map[string]any{"login": login, "reason": "rate_limited", "channel": "webdav"},
-			})
+			// Suppress the audit if this login has a recent successful auth
+			// cached: in that case the 429 is just Finder's burst exceeding
+			// the bucket with valid credentials, not a real attack signal.
+			if !s.davAuthCache.HasLogin(login) {
+				s.audit(r.Context(), audit.Event{
+					Action:  audit.ActionLoginFailed,
+					IP:      ip,
+					Result:  audit.ResultDenied,
+					Details: map[string]any{"login": login, "reason": "rate_limited", "channel": "webdav"},
+				})
+			}
 			http.Error(w, "too many auth attempts — try again shortly", http.StatusTooManyRequests)
 			return
 		}
@@ -78,6 +97,7 @@ func (s *Server) davAuth(next http.Handler) http.Handler {
 			s.davChallenge(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
+		s.davAuthCache.Put(cacheKey, user)
 		ctx := context.WithValue(r.Context(), ctxKeyUser{}, &user)
 		ctx = storage.WithActor(ctx, user.ID)
 		next.ServeHTTP(w, r.WithContext(ctx))
