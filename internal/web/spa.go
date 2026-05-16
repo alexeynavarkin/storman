@@ -39,6 +39,11 @@ func SPAFromDir(dir string) (http.Handler, error) {
 func SPAFromFS(root fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		clean := path.Clean(r.URL.Path)
 		rel := strings.TrimPrefix(clean, "/")
 		if rel == "" {

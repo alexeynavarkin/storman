@@ -209,9 +209,13 @@ func (s *Server) routes() http.Handler {
 		mux.Handle(s.davPrefix+"/", s.davHandler())
 	}
 
-	// SPA static + index fallback for any non-/api route.
+	// SPA static + index fallback for any non-/api route. Registered without
+	// a method so it doesn't collide with method-less prefix patterns like
+	// "/dav/" (Go's ServeMux rejects a GET-/ vs /dav/ pair as ambiguous: one
+	// is more specific on method, the other on path). The SPA handler itself
+	// rejects non-GET/HEAD with 405.
 	if s.SPA != nil {
-		mux.Handle("GET /", s.SPA)
+		mux.Handle("/", s.SPA)
 	}
 
 	return securityHeaders(mux)
