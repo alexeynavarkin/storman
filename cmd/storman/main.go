@@ -8,9 +8,12 @@ import (
 	"syscall"
 
 	"github.com/alexnav/storman/internal/cli"
+	"github.com/alexnav/storman/internal/logging"
 )
 
 func main() {
+	logging.Setup()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

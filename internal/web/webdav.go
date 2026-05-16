@@ -12,7 +12,7 @@ package web
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -31,7 +31,10 @@ func (s *Server) davHandler() http.Handler {
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {
 			if err != nil {
-				log.Printf("webdav %s %s: %v", r.Method, r.URL.Path, err)
+				slog.Warn("webdav request failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"err", err)
 			}
 		},
 	}

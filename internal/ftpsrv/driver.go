@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	ftpserver "github.com/fclairamb/ftpserverlib"
 
@@ -14,6 +15,10 @@ import (
 	"github.com/alexnav/storman/internal/rbac"
 	"github.com/alexnav/storman/internal/storage/dbfs"
 )
+
+// authTimeout bounds the auth call (argon2 verify + DB roundtrip). Generous
+// because argon2 is intentionally slow.
+const authTimeout = 30 * time.Second
 
 // Config is the runtime tuning for the FTPS server.
 type Config struct {
@@ -24,6 +29,10 @@ type Config struct {
 	IdleTimeoutSec int
 	// TLSConfig must be non-nil — plain FTP is rejected per docs/arch/interfaces.md.
 	TLSConfig *tls.Config
+	// Limiter rate-limits AuthUser by (login, client IP). Should be the same
+	// *auth.LoginLimiter the HTTP/WebDAV surfaces use, so an attacker can't
+	// bypass the limit by switching protocols. Nil disables limiting.
+	Limiter *auth.LoginLimiter
 }
 
 // Driver implements ftpserver.MainDriver. One Driver instance is shared
@@ -83,10 +92,22 @@ func (d *Driver) AuthUser(cc ftpserver.ClientContext, login, pass string) (ftpse
 	if !cc.HasTLSForControl() {
 		return nil, errors.New("ftpsrv: TLS required on control channel")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30) // 30s — argon2 needs headroom
-	cancel()
-	_ = ctx
-	user, err := d.users.AuthenticateAppPassword(context.Background(), login, pass)
+	// Rate-limit before the (expensive) argon2 verify. Same limiter as the
+	// HTTP/WebDAV surfaces, so brute-force attempts cross-protocol are
+	// counted together.
+	ip := ""
+	if addr := cc.RemoteAddr(); addr != nil {
+		if host, _, splitErr := net.SplitHostPort(addr.String()); splitErr == nil {
+			ip = host
+		}
+	}
+	if ok, _ := d.cfg.Limiter.Allow(login, ip); !ok {
+		d.logger.Printf("ftp: rate-limited auth for %q from %s (client %d)", login, ip, cc.ID())
+		return nil, fmt.Errorf("login failed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), authTimeout)
+	defer cancel()
+	user, err := d.users.AuthenticateAppPassword(ctx, login, pass)
 	if err != nil {
 		if errors.Is(err, auth.ErrPasswordMismatch) ||
 			errors.Is(err, auth.ErrNotFound) ||

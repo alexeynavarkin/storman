@@ -1,4 +1,4 @@
-package web
+package auth
 
 import (
 	"testing"
@@ -8,7 +8,7 @@ import (
 // burst quota (10 attempts) and then gets denied. We don't sleep for the
 // refill — that's covered by the rate.Limiter unit tests upstream.
 func TestLoginLimiterBurst(t *testing.T) {
-	l := newLoginLimiter()
+	l := NewLoginLimiter()
 	for i := 0; i < 10; i++ {
 		ok, _ := l.Allow("alice", "1.2.3.4")
 		if !ok {
@@ -27,7 +27,7 @@ func TestLoginLimiterBurst(t *testing.T) {
 // TestLoginLimiterPerKeyIsolation makes sure exhausting one login doesn't
 // punish another. Same IP, different login — fresh bucket.
 func TestLoginLimiterPerKeyIsolation(t *testing.T) {
-	l := newLoginLimiter()
+	l := NewLoginLimiter()
 	for i := 0; i < 10; i++ {
 		if ok, _ := l.Allow("alice", "1.2.3.4"); !ok {
 			t.Fatalf("alice attempt %d denied early", i+1)
@@ -40,10 +40,10 @@ func TestLoginLimiterPerKeyIsolation(t *testing.T) {
 	}
 }
 
-// TestNilLimiterPermissive guards the test-harness case where the server
-// has no limiter wired in.
+// TestNilLimiterPermissive guards the test-harness case where callers leave
+// the limiter unset (e.g. tests that want to disable rate limiting).
 func TestNilLimiterPermissive(t *testing.T) {
-	var l *loginLimiter
+	var l *LoginLimiter
 	ok, _ := l.Allow("anyone", "anywhere")
 	if !ok {
 		t.Error("nil limiter must allow everything")

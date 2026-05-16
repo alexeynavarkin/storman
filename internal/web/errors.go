@@ -3,7 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/alexnav/storman/internal/auth"
@@ -28,7 +28,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		return
 	}
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("web: encode response: %v", err)
+		slog.Error("encode response", "err", err)
 	}
 }
 
@@ -56,7 +56,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, errGone):
 		writeJSON(w, http.StatusGone, errorBody{Error: err.Error()})
 	default:
-		log.Printf("web: unhandled error on %s %s: %v", r.Method, r.URL.Path, err)
+		slog.Error("unhandled error",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 	}
 }

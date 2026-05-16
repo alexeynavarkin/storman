@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +22,7 @@ import (
 	"github.com/alexnav/storman/internal/db"
 	"github.com/alexnav/storman/internal/ftpsrv"
 	"github.com/alexnav/storman/internal/jobs"
+	"github.com/alexnav/storman/internal/metrics"
 	"github.com/alexnav/storman/internal/rbac"
 	"github.com/alexnav/storman/internal/storage"
 	"github.com/alexnav/storman/internal/storage/dbfs"
@@ -61,7 +62,7 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 	if acted, err := fs.RecoverPending(ctx); err != nil {
 		return fmt.Errorf("recover pending: %w", err)
 	} else if acted > 0 {
-		log.Printf("startup: recovered %d pending outbox row(s)", acted)
+		slog.Info("startup: recovered pending outbox rows", "count", acted)
 	}
 	fs.StartGC(ctx, time.Duration(cfg.Trash.GCInterval), cfg.Trash.RetentionDays, nil)
 
@@ -88,16 +89,27 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 	perms := rbac.NewPermissionService(pool)
 	shares := auth.NewShareLinkService(pool)
 	auditSvc := audit.NewService(pool, nil)
+	// One shared limiter across HTTP login, WebDAV Basic auth, and FTPS auth
+	// — switching protocols can't bypass the rate limit.
+	loginLimiter := auth.NewLoginLimiter()
+
+	// Prometheus registry: HTTP middleware + DB pool gauges + outbox depth.
+	met := metrics.New()
+	met.RegisterPoolStats(pool)
+	met.RegisterOutboxDepth(pool)
 
 	tlsEnabled := cfg.Web.TLS.Enabled()
 	if cfg.Web.SecureCookies && !tlsEnabled && !cfg.Web.TrustProxyHeaders {
-		log.Printf("warning: secure_cookies requested but neither TLS nor trust_proxy_headers is configured — Secure flag will only be set on requests arriving over HTTPS")
+		slog.Warn("secure_cookies requested but neither TLS nor trust_proxy_headers is configured — Secure flag will only be set on requests arriving over HTTPS")
 	}
 
 	server := web.NewServer(web.Config{
 		SecureCookies:     cfg.Web.SecureCookies,
 		LocalTLS:          tlsEnabled,
 		TrustProxyHeaders: cfg.Web.TrustProxyHeaders,
+		LoginLimiter:      loginLimiter,
+		Ready:             func(ctx context.Context) error { return pool.Ping(ctx) },
+		MetricsHandler:    met.Handler(),
 	}, users, sessions, perms, shares, fs, auditSvc)
 	if err := server.InitSetup(ctx); err != nil {
 		return err
@@ -110,9 +122,9 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 		}
 		server = server.SetDav(true, prefix)
 		if !tlsEnabled {
-			log.Printf("warning: webdav.enabled=true but TLS is not configured — basic credentials will travel in clear")
+			slog.Warn("webdav enabled but TLS is not configured — basic credentials will travel in clear")
 		}
-		log.Printf("storman webdav: mounted at %s/", prefix)
+		slog.Info("webdav mounted", "prefix", prefix)
 	}
 	switch {
 	case uiDir != "":
@@ -121,18 +133,18 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 			return fmt.Errorf("ui-dir: %w", err)
 		}
 		server = server.WithSPA(spa)
-		log.Printf("serving SPA from %s", uiDir)
+		slog.Info("serving SPA from directory", "dir", uiDir)
 	default:
 		if assets, ok := web.EmbeddedSPA(); ok {
 			server = server.WithSPA(web.SPAFromFS(assets))
-			log.Printf("serving SPA from the embedded build")
+			slog.Info("serving SPA from the embedded build")
 		} else {
-			log.Printf("running in API-only mode (no --ui-dir and no embedded SPA) — use Vite dev server for UI")
+			slog.Info("running in API-only mode (no --ui-dir and no embedded SPA) — use Vite dev server for UI")
 		}
 	}
 	httpSrv := &http.Server{
 		Addr:              cfg.Web.ListenAddr,
-		Handler:           server.Handler,
+		Handler:           met.Wrap(server.Handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -146,10 +158,10 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 	errCh := make(chan error, 2)
 	go func() {
 		if tlsEnabled {
-			log.Printf("storman serve: HTTPS on %s", cfg.Web.ListenAddr)
+			slog.Info("HTTP listener up", "scheme", "https", "addr", cfg.Web.ListenAddr)
 			errCh <- httpSrv.ListenAndServeTLS(cfg.Web.TLS.CertFile, cfg.Web.TLS.KeyFile)
 		} else {
-			log.Printf("storman serve: HTTP on %s (TLS not configured — development only)", cfg.Web.ListenAddr)
+			slog.Warn("HTTP listener up without TLS — development only", "scheme", "http", "addr", cfg.Web.ListenAddr)
 			errCh <- httpSrv.ListenAndServe()
 		}
 	}()
@@ -160,7 +172,7 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 	if cfg.FTP.Enabled {
 		ftpTLS := cfg.EffectiveFTPTLS()
 		if !ftpTLS.Enabled() {
-			log.Printf("warning: ftp.enabled=true but no TLS cert/key configured — FTPS server not started")
+			slog.Warn("ftp.enabled=true but no TLS cert/key configured — FTPS server not started")
 		} else {
 			tlsCfg, err := loadTLSConfig(ftpTLS)
 			if err != nil {
@@ -173,10 +185,14 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 				PassivePortMax: cfg.FTP.PassivePortMax,
 				IdleTimeoutSec: cfg.FTP.IdleTimeoutSec,
 				TLSConfig:      tlsCfg,
+				Limiter:        loginLimiter,
 			}, users, perms, fs, nil)
 			ftpServer = ftpsrv.NewServer(driver, nil)
 			go func() {
-				log.Printf("storman ftps: listening on %s (passive %d-%d)", cfg.FTP.ListenAddr, cfg.FTP.PassivePortMin, cfg.FTP.PassivePortMax)
+				slog.Info("FTPS listener up",
+					"addr", cfg.FTP.ListenAddr,
+					"passive_min", cfg.FTP.PassivePortMin,
+					"passive_max", cfg.FTP.PassivePortMax)
 				errCh <- ftpServer.Serve(ctx)
 			}()
 		}
@@ -184,7 +200,7 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 
 	select {
 	case <-ctx.Done():
-		log.Printf("shutdown signal received")
+		slog.Info("shutdown signal received")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {

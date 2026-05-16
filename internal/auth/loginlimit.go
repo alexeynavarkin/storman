@@ -1,4 +1,4 @@
-package web
+package auth
 
 import (
 	"strings"
@@ -8,15 +8,18 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// loginLimiter rate-limits the /api/auth/login endpoint by login name and by
+// LoginLimiter rate-limits authentication attempts by login name and by
 // client IP. Two independent buckets — exceeding either returns 429 with a
-// Retry-After header. Complements UserService's failed_attempts/locked_until
+// Retry-After hint. Complements UserService's failed_attempts/locked_until
 // bookkeeping by adding a cheap in-memory burst guard.
+//
+// One instance is shared across surfaces (web login, WebDAV Basic auth,
+// FTPS auth) so an attacker can't bypass the limit by switching protocols.
 //
 // Eviction: buckets keep state for ~10 min after their last touch via a
 // lazy sweep on each Allow call. For a personal-scale server with a handful
 // of users this is plenty; for higher fan-out, swap for an LRU cache.
-type loginLimiter struct {
+type LoginLimiter struct {
 	mu       sync.Mutex
 	byLogin  map[string]*bucket
 	byIP     map[string]*bucket
@@ -31,10 +34,10 @@ type bucket struct {
 	lastSeen time.Time
 }
 
-// newLoginLimiter returns the production-default limiter: 10 attempts per
+// NewLoginLimiter returns the production-default limiter: 10 attempts per
 // minute per login, 60 attempts per minute per client IP.
-func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{
+func NewLoginLimiter() *LoginLimiter {
+	return &LoginLimiter{
 		byLogin:  make(map[string]*bucket),
 		byIP:     make(map[string]*bucket),
 		loginCfg: rate.Every(time.Minute / 10),
@@ -53,7 +56,10 @@ func newLoginLimiter() *loginLimiter {
 // over-debit when one bucket is empty but the other isn't (the still-fresh
 // bucket consumes a token it shouldn't have). At the rate humans hammer a
 // login form, that's noise.
-func (l *loginLimiter) Allow(login, ip string) (ok bool, retryAfter time.Duration) {
+//
+// A nil receiver allows everything — handy for test harnesses that want to
+// disable rate limiting.
+func (l *LoginLimiter) Allow(login, ip string) (ok bool, retryAfter time.Duration) {
 	if l == nil {
 		return true, 0
 	}
@@ -74,7 +80,7 @@ func (l *loginLimiter) Allow(login, ip string) (ok bool, retryAfter time.Duratio
 	return true, 0
 }
 
-func (l *loginLimiter) bucketLocked(m map[string]*bucket, key string, r rate.Limit, burst int) *bucket {
+func (l *LoginLimiter) bucketLocked(m map[string]*bucket, key string, r rate.Limit, burst int) *bucket {
 	if b, ok := m[key]; ok {
 		return b
 	}
@@ -85,7 +91,7 @@ func (l *loginLimiter) bucketLocked(m map[string]*bucket, key string, r rate.Lim
 
 // gcLocked drops buckets idle for >10 min. O(n) on the maps; fine for a
 // personal-scale deployment with at most hundreds of distinct logins/IPs.
-func (l *loginLimiter) gcLocked() {
+func (l *LoginLimiter) gcLocked() {
 	cutoff := time.Now().Add(-10 * time.Minute)
 	for k, b := range l.byLogin {
 		if b.lastSeen.Before(cutoff) {

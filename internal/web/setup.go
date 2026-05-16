@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,12 +47,8 @@ func (s *Server) InitSetup(ctx context.Context) error {
 	s.setup.mu.Lock()
 	s.setup.token = token
 	s.setup.mu.Unlock()
-	log.Printf("==================================================")
-	log.Printf("FIRST-RUN SETUP REQUIRED")
-	log.Printf("Open /setup in a browser and paste this token:")
-	log.Printf("  %s", token)
-	log.Printf("Token is regenerated on every restart until the first admin is created.")
-	log.Printf("==================================================")
+	slog.Warn("first-run setup required — open /setup in a browser and paste the token below; regenerated on every restart until the first admin is created",
+		"setup_token", token)
 	return nil
 }
 
