@@ -74,7 +74,7 @@ the public network — an attacker could spoof the header. The default
 ## Upgrading
 
 ```bash
-# Update STORMAN_IMAGE in .env to the new tag, e.g. alexnav/storman:v0.2.0
+# Update STORMAN_IMAGE in .env to the new tag, e.g. ghcr.io/alexnav/storman:v0.2.0
 docker compose pull storman
 docker compose up -d storman
 ```
@@ -143,7 +143,7 @@ vars are ignored.
 | `POSTGRES_DB` | `storman` | Database name. |
 | `POSTGRES_USER` | `storman` | Database user. |
 | `POSTGRES_PASSWORD` | _(required)_ | Set in `.env` before the first `docker compose up`. Once Postgres is initialised, changing this has no effect — the password is baked into the volume. |
-| `STORMAN_IMAGE` | `alexnav/storman:latest` | Image tag. Pin to a specific version in production. |
+| `STORMAN_IMAGE` | `ghcr.io/alexnav/storman:latest` | Image tag. Pin to a specific version in production. |
 | `STORMAN_BIND` | `127.0.0.1:8080` | `host:port` mapping for the storman container's HTTP port. Defaults to localhost so only a local reverse proxy can reach it. |
 
 ### `config.json` reference
