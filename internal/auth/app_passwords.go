@@ -40,24 +40,41 @@ func (s *UserService) AuthenticateAppPassword(ctx context.Context, login, secret
 		return User{}, err
 	}
 
+	// Drain all (id, hash) rows up front and release the pool connection
+	// before doing any further work. Holding the Query connection across the
+	// per-row VerifyPassword (argon2, ~ms) and the follow-up UPDATEs would
+	// require a second connection from the same goroutine — under a burst of
+	// concurrent app-password logins that pattern deadlocks the pool (every
+	// goroutine holds one conn and waits for another).
+	type candidate struct {
+		id   uuid.UUID
+		hash string
+	}
 	rows, err2 := s.pool.Query(ctx,
 		`SELECT id, hash FROM app_passwords WHERE user_id = $1`, u.ID)
 	if err2 != nil {
 		return User{}, fmt.Errorf("load app passwords: %w", err2)
 	}
-	defer rows.Close()
+	var candidates []candidate
 	for rows.Next() {
-		var tokenID uuid.UUID
-		var hash string
-		if err := rows.Scan(&tokenID, &hash); err != nil {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.hash); err != nil {
+			rows.Close()
 			return User{}, err
 		}
-		if VerifyPassword(secret, hash) == nil {
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return User{}, err
+	}
+	for _, c := range candidates {
+		if VerifyPassword(secret, c.hash) == nil {
 			// Match — record last_used and return the user. Don't bump
 			// failed_attempts again (we already did inside Authenticate).
 			if _, err := s.pool.Exec(ctx,
 				`UPDATE app_passwords SET last_used = $1 WHERE id = $2`,
-				time.Now().UTC(), tokenID); err != nil {
+				time.Now().UTC(), c.id); err != nil {
 				return User{}, fmt.Errorf("update last_used: %w", err)
 			}
 			if _, err := s.pool.Exec(ctx,
@@ -67,9 +84,6 @@ func (s *UserService) AuthenticateAppPassword(ctx context.Context, login, secret
 			}
 			return u, nil
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return User{}, err
 	}
 	// No match anywhere — propagate the original mismatch.
 	return User{}, err

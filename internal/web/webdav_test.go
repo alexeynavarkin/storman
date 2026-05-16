@@ -250,6 +250,18 @@ func TestWebDAVRespectsACL(t *testing.T) {
 func TestWebDAVAuthCacheSurvivesBurst(t *testing.T) {
 	h := newDavHarness(t)
 
+	// Prime the cache with a single sequential request. The Finder pattern we
+	// reproduce here is "one initial auth, then a flood of follow-up requests
+	// for a folder operation" — without this priming step the test has its own
+	// race (all 50 goroutines hit the empty cache, 40 lose to the limiter
+	// before the first request's Put runs) which is independent of the bug
+	// under test.
+	resp := h.dav(http.MethodOptions, "/", nil, false, nil)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatalf("priming request rate-limited: %d", resp.StatusCode)
+	}
+
 	const burst = 50
 	type result struct{ status int }
 	results := make(chan result, burst)
