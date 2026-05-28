@@ -16,6 +16,7 @@ import (
 
 	"github.com/alexnav/storman/internal/audit"
 	"github.com/alexnav/storman/internal/auth"
+	wauth "github.com/alexnav/storman/internal/auth/webauthn"
 	"github.com/alexnav/storman/internal/backup"
 	"github.com/alexnav/storman/internal/config"
 	"github.com/alexnav/storman/internal/datadir"
@@ -36,18 +37,19 @@ func newServeCmd(configPath *string) *cobra.Command {
 		Use:   "serve",
 		Short: "Run the storman HTTP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(resolveConfigPath(*configPath))
+			resolvedPath := resolveConfigPath(*configPath)
+			cfg, err := config.Load(resolvedPath)
 			if err != nil {
 				return err
 			}
-			return runServe(cmd.Context(), cfg, uiDir)
+			return runServe(cmd.Context(), cfg, resolvedPath, uiDir)
 		},
 	}
 	cmd.Flags().StringVar(&uiDir, "ui-dir", "", "directory containing the built SPA (omit for API-only mode; use Vite dev server during development)")
 	return cmd
 }
 
-func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
+func runServe(ctx context.Context, cfg config.Config, configPath, uiDir string) error {
 	pool, err := db.NewPool(ctx, cfg.Database.DSN)
 	if err != nil {
 		return err
@@ -110,7 +112,26 @@ func runServe(ctx context.Context, cfg config.Config, uiDir string) error {
 		LoginLimiter:      loginLimiter,
 		Ready:             func(ctx context.Context) error { return pool.Ping(ctx) },
 		MetricsHandler:    met.Handler(),
+		ConfigPath:        configPath,
 	}, users, sessions, perms, shares, fs, auditSvc)
+	if cfg.WebAuthn.Enabled() {
+		passkeys, err := wauth.NewService(pool, wauth.Config{
+			RPID:          cfg.WebAuthn.RPID,
+			RPDisplayName: cfg.WebAuthn.RPDisplayName,
+			RPOrigins:     cfg.WebAuthn.RPOrigins,
+			ChallengeTTL:  time.Duration(cfg.WebAuthn.ChallengeTTLSec) * time.Second,
+		})
+		if err != nil {
+			return fmt.Errorf("webauthn: %w", err)
+		}
+		server.Passkeys = passkeys
+		sweepInterval := time.Duration(cfg.WebAuthn.SweepIntervalSec) * time.Second
+		if sweepInterval <= 0 {
+			sweepInterval = time.Minute
+		}
+		server.StartWebAuthnSweeper(ctx, sweepInterval, nil)
+		slog.Info("passkey auth enabled", "rp_id", cfg.WebAuthn.RPID, "origins", cfg.WebAuthn.RPOrigins)
+	}
 	if err := server.InitSetup(ctx); err != nil {
 		return err
 	}

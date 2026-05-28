@@ -26,7 +26,29 @@ type Config struct {
 	Indexing   IndexingConfig `json:"indexing"`
 	Tus        TusConfig      `json:"tus"`
 	WebDAV     WebDAVConfig   `json:"webdav"`
+	WebAuthn   WebAuthnConfig `json:"webauthn"`
 }
+
+// WebAuthnConfig controls the passkey (WebAuthn) authentication feature for
+// the web UI. Empty RPID disables passkeys entirely: handlers return 404 and
+// the SPA hides the related UI. WebDAV/FTP/share-links are unaffected — they
+// stay on app-passwords.
+//
+// RPID must be the bare domain (e.g. "files.example.com"); RPOrigins must be
+// the full origin strings the browser actually sees (e.g.
+// "https://files.example.com"). At least one origin is required when enabled.
+// ChallengeTTLSec / SweepIntervalSec fall back to package defaults (300 / 60)
+// when 0.
+type WebAuthnConfig struct {
+	RPID             string   `json:"rp_id"`
+	RPDisplayName    string   `json:"rp_display_name,omitempty"`
+	RPOrigins        []string `json:"rp_origins,omitempty"`
+	ChallengeTTLSec  int      `json:"challenge_ttl_sec,omitempty"`
+	SweepIntervalSec int      `json:"sweep_interval_sec,omitempty"`
+}
+
+// Enabled reports whether passkey authentication is configured.
+func (w WebAuthnConfig) Enabled() bool { return w.RPID != "" }
 
 // WebDAVConfig controls the WebDAV interface mounted under the main HTTPS
 // server. Auth is HTTP Basic with an app-password (same secret a user would
@@ -257,6 +279,20 @@ func (c Config) validate(path string) error {
 		}
 		if c.FTP.PassivePortMin <= 0 || c.FTP.PassivePortMax < c.FTP.PassivePortMin {
 			return errors.New("ftp.passive_port_min/max invalid")
+		}
+	}
+	if c.WebAuthn.Enabled() {
+		if len(c.WebAuthn.RPOrigins) == 0 {
+			return errors.New("webauthn.rp_origins must list at least one origin when rp_id is set")
+		}
+		for _, o := range c.WebAuthn.RPOrigins {
+			u, err := url.Parse(o)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				return fmt.Errorf("webauthn.rp_origins: %q is not a valid origin", o)
+			}
+		}
+		if c.WebAuthn.ChallengeTTLSec < 0 || c.WebAuthn.SweepIntervalSec < 0 {
+			return errors.New("webauthn.challenge_ttl_sec / sweep_interval_sec must be >= 0")
 		}
 	}
 	if p := c.WebDAV.PathPrefix; p != "" {

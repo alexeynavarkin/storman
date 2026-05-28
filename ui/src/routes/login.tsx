@@ -1,15 +1,18 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { startAuthentication } from "@simplewebauthn/browser";
+import { Fingerprint, Loader2 } from "lucide-react";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { useLocation, useNavigate } from "react-router";
+import { toast } from "sonner";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { currentUserQueryKey, useCurrentUser } from "@/features/auth/use-current-user";
+import { beginLogin, finishLogin } from "@/features/passkeys/api";
 import { ApiError, api } from "@/lib/api";
 import type { MeResponse } from "@/types/api";
 
@@ -53,6 +56,24 @@ export function LoginRoute() {
     onError: (err) => {
       const message = err instanceof ApiError ? err.message : "Login failed";
       form.setError("password", { message });
+    },
+  });
+
+  const passkey = useMutation({
+    mutationFn: async () => {
+      const begin = await beginLogin();
+      const assertion = await startAuthentication({ optionsJSON: begin.publicKey });
+      return finishLogin(begin.challenge_id, assertion);
+    },
+    onSuccess: (user) => {
+      queryClient.setQueryData(currentUserQueryKey, user);
+      navigate(from, { replace: true });
+    },
+    onError: (err) => {
+      // NotAllowedError = user cancelled. Stay silent in that case.
+      if (err instanceof Error && err.name === "NotAllowedError") return;
+      const message = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Passkey sign-in failed";
+      toast.error(message);
     },
   });
 
@@ -111,6 +132,23 @@ export function LoginRoute() {
               <Loader2 className="size-4 animate-spin" />
             ) : (
               "Sign in"
+            )}
+          </Button>
+
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={passkey.isPending}
+            onClick={() => passkey.mutate()}
+            className="w-full gap-2"
+          >
+            {passkey.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <>
+                <Fingerprint className="size-4" />
+                Sign in with passkey
+              </>
             )}
           </Button>
         </form>

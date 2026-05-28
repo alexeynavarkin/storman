@@ -63,7 +63,7 @@ then migrate (idempotent), then serve. Designed for container entrypoints.`,
 			}
 
 			cmd.Println("==> serve")
-			return runServe(cmd.Context(), cfg, "")
+			return runServe(cmd.Context(), cfg, path, "")
 		},
 	}
 	return cmd
