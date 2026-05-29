@@ -80,6 +80,26 @@ func (l *LoginLimiter) Allow(login, ip string) (ok bool, retryAfter time.Duratio
 	return true, 0
 }
 
+// AllowIP applies only the per-IP bucket. Intended for flows where the user
+// identity isn't known at the start of the request — passkey discoverable
+// login is the canonical case (the assertion arrives without a login string).
+func (l *LoginLimiter) AllowIP(ip string) (ok bool, retryAfter time.Duration) {
+	if l == nil {
+		return true, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gcLocked()
+
+	now := time.Now()
+	b := l.bucketLocked(l.byIP, ip, l.ipCfg, l.ipB)
+	b.lastSeen = now
+	if !b.lim.AllowN(now, 1) {
+		return false, time.Second
+	}
+	return true, 0
+}
+
 func (l *LoginLimiter) bucketLocked(m map[string]*bucket, key string, r rate.Limit, burst int) *bucket {
 	if b, ok := m[key]; ok {
 		return b

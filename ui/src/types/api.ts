@@ -8,6 +8,16 @@ export interface MeResponse {
   id: string;
   login: string;
   is_root_admin: boolean;
+  passkeys_enabled: boolean;
+}
+
+export interface PasskeyDTO {
+  id: string;
+  name: string;
+  transports: string[];
+  backup_state: boolean;
+  created_at: string;
+  last_used_at?: string;
 }
 
 export interface NodeInfo {

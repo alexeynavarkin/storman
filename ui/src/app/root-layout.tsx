@@ -14,6 +14,7 @@ import { FilesRoute } from "@/routes/files";
 const UsersRoute = lazy(() => import("@/routes/users").then((m) => ({ default: m.UsersRoute })));
 const TrashRoute = lazy(() => import("@/routes/trash").then((m) => ({ default: m.TrashRoute })));
 const AuditRoute = lazy(() => import("@/routes/audit").then((m) => ({ default: m.AuditRoute })));
+const SettingsRoute = lazy(() => import("@/routes/settings").then((m) => ({ default: m.SettingsRoute })));
 
 export function RootLayout() {
   const setup = useSetupState();
@@ -67,6 +68,16 @@ export function RootLayout() {
           <RequireAuth>
             <Lazy>
               <AuditRoute />
+            </Lazy>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <RequireAuth>
+            <Lazy>
+              <SettingsRoute />
             </Lazy>
           </RequireAuth>
         }

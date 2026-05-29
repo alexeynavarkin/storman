@@ -17,9 +17,10 @@ type loginRequest struct {
 }
 
 type meResponse struct {
-	ID          string `json:"id"`
-	Login       string `json:"login"`
-	IsRootAdmin bool   `json:"is_root_admin"`
+	ID              string `json:"id"`
+	Login           string `json:"login"`
+	IsRootAdmin     bool   `json:"is_root_admin"`
+	PasskeysEnabled bool   `json:"passkeys_enabled"`
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -85,9 +86,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Result: audit.ResultOK,
 	})
 	writeJSON(w, http.StatusOK, meResponse{
-		ID:          user.ID.String(),
-		Login:       user.Login,
-		IsRootAdmin: admin,
+		ID:              user.ID.String(),
+		Login:           user.Login,
+		IsRootAdmin:     admin,
+		PasskeysEnabled: s.passkeyEnabled(),
 	})
 }
 
@@ -120,9 +122,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	admin, _ := s.isRootAdmin(r.Context(), user.ID)
 	writeJSON(w, http.StatusOK, meResponse{
-		ID:          user.ID.String(),
-		Login:       user.Login,
-		IsRootAdmin: admin,
+		ID:              user.ID.String(),
+		Login:           user.Login,
+		IsRootAdmin:     admin,
+		PasskeysEnabled: s.passkeyEnabled(),
 	})
 }
 

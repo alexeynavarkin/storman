@@ -10,10 +10,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/alexnav/storman/internal/audit"
 	"github.com/alexnav/storman/internal/auth"
+	"github.com/alexnav/storman/internal/auth/webauthn"
 	"github.com/alexnav/storman/internal/rbac"
 	"github.com/alexnav/storman/internal/storage/dbfs"
 )
@@ -50,6 +52,13 @@ type Config struct {
 	// MetricsHandler, if non-nil, is mounted at GET /metrics. Typically
 	// produced by metrics.New().Handler() in serve.go.
 	MetricsHandler http.Handler
+	// ConfigPath is the absolute path to config.json. When non-empty, the
+	// admin settings endpoints (GET/PUT /api/admin/config) are mounted; the
+	// PUT handler validates the incoming config and writes it atomically to
+	// this path. The new values only take effect on the next process start —
+	// the handler flips an in-memory "restart required" flag the SPA reads
+	// to show a banner.
+	ConfigPath string
 }
 
 // Server bundles the HTTP handler with its dependencies.
@@ -61,6 +70,10 @@ type Server struct {
 	Shares   *auth.ShareLinkService
 	FS       *dbfs.DBFS
 	Audit    *audit.Service
+	// Passkeys is the WebAuthn service. Nil when the operator hasn't
+	// configured an RP — passkey routes then short-circuit to 404 and the
+	// SPA hides the related UI.
+	Passkeys *webauthn.Service
 	// SPA, if non-nil, is mounted at /. It must implement the SPA-fallback
 	// pattern itself (serve assets, fall back to index.html for unknown paths).
 	SPA     http.Handler
@@ -84,6 +97,11 @@ type Server struct {
 	// SetDav; default off. Prefix is e.g. "/dav" — no trailing slash.
 	davEnabled bool
 	davPrefix  string
+
+	// restartPending is flipped to 1 after a successful PUT to
+	// /api/admin/config. The flag is process-local — restarting the binary
+	// clears it because the new config is what's running.
+	restartPending atomic.Bool
 }
 
 // NewServer wires the dependencies into an http.Handler. The returned Server's
@@ -155,6 +173,17 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/auth/logout", s.chain(s.handleLogout, authedMutate))
 	mux.Handle("GET /api/auth/me", s.chain(s.handleMe, authedRead))
 
+	// Passkey (WebAuthn). Login flow is open (no session yet — integrity
+	// comes from the DB-stored, single-use challenge). Registration/list/
+	// rename/delete require a session; mutations also require CSRF.
+	mux.Handle("POST /api/auth/passkey/login/begin", s.chain(s.handlePasskeyLoginBegin, openRoute))
+	mux.Handle("POST /api/auth/passkey/login/finish", s.chain(s.handlePasskeyLoginFinish, openRoute))
+	mux.Handle("GET /api/passkeys", s.chain(s.handlePasskeyList, authedRead))
+	mux.Handle("POST /api/passkeys/register/begin", s.chain(s.handlePasskeyRegisterBegin, authedMutate))
+	mux.Handle("POST /api/passkeys/register/finish", s.chain(s.handlePasskeyRegisterFinish, authedMutate))
+	mux.Handle("PATCH /api/passkeys/{id}", s.chain(s.handlePasskeyRename, authedMutate))
+	mux.Handle("DELETE /api/passkeys/{id}", s.chain(s.handlePasskeyDelete, authedMutate))
+
 	// Filesystem.
 	mux.Handle("GET /api/fs/stat", s.chain(s.handleStat, authedRead))
 	mux.Handle("GET /api/fs/list", s.chain(s.handleList, authedRead))
@@ -180,6 +209,14 @@ func (s *Server) routes() http.Handler {
 
 	// Audit (admin-only).
 	mux.Handle("GET /api/audit", s.chain(s.handleAuditList, authedRead))
+
+	// Admin settings (admin-only via handler check). Mounted only when the
+	// server knows where the config file lives; otherwise the editor has
+	// nowhere to write.
+	if s.Config.ConfigPath != "" {
+		mux.Handle("GET /api/admin/config", s.chain(s.handleAdminConfigGet, authedRead))
+		mux.Handle("PUT /api/admin/config", s.chain(s.handleAdminConfigPut, authedMutate))
+	}
 
 	// Liveness/readiness/metrics — unauthenticated by design so probes and
 	// scrapers work without credentials. Lock down via the network layer if

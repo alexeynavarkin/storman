@@ -50,6 +50,13 @@ const (
 	ActionShareUse      = "share_use"
 	ActionBackup        = "backup"
 	ActionRecover       = "recover"
+
+	ActionPasskeyRegister = "passkey_register"
+	ActionPasskeyLogin    = "passkey_login"
+	ActionPasskeyDelete   = "passkey_delete"
+	ActionPasskeyRename   = "passkey_rename"
+
+	ActionConfigUpdate = "config_update"
 )
 
 // Event is the in-memory shape an event has before it lands in the table.

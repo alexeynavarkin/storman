@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, LogOut } from "lucide-react";
+import { Fingerprint, KeyRound, LogOut } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 
 import { ChangePasswordDialog } from "@/components/users/change-password-dialog";
+import { PasskeysDialog } from "@/features/passkeys/passkeys-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,6 +24,7 @@ export function Header() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [pwOpen, setPwOpen] = useState(false);
+  const [pkOpen, setPkOpen] = useState(false);
 
   const logout = useMutation({
     mutationFn: () => api<void>("/api/auth/logout", { method: "POST" }),
@@ -55,6 +57,9 @@ export function Header() {
               <NavTab to="/audit" exact>
                 Audit
               </NavTab>
+              <NavTab to="/settings" exact>
+                Settings
+              </NavTab>
             </>
           )}
         </nav>
@@ -81,6 +86,12 @@ export function Header() {
             <KeyRound className="size-4" />
             <span>Change password</span>
           </DropdownMenuItem>
+          {me.data?.passkeys_enabled && (
+            <DropdownMenuItem onSelect={() => setPkOpen(true)}>
+              <Fingerprint className="size-4" />
+              <span>Manage passkeys</span>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={(e) => {
@@ -102,6 +113,9 @@ export function Header() {
           login={me.data.login}
           isSelf
         />
+      )}
+      {me.data?.passkeys_enabled && (
+        <PasskeysDialog open={pkOpen} onOpenChange={setPkOpen} />
       )}
     </header>
   );

@@ -12,6 +12,7 @@ import { PermissionsDialog } from "@/components/files/permissions-dialog";
 import { RenameDialog } from "@/components/files/rename-dialog";
 import { ShareDialog } from "@/components/files/share-dialog";
 import { UploadZone } from "@/components/files/upload-zone";
+import { ViewSettingsMenu } from "@/components/files/view-settings-menu";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { ApiError, api, rawFetch } from "@/lib/api";
 import { Action, hasAction } from "@/lib/permissions";
+import { useViewPrefs } from "@/lib/use-view-prefs";
 import type { NodeInfo } from "@/types/api";
 
 function pathFromLocation(pathname: string): string {
@@ -75,6 +77,8 @@ export function FilesRoute() {
   const canWrite = !!stat && hasAction(stat.effective, Action.Write);
   const canAdmin = !!stat && hasAction(stat.effective, Action.Admin);
 
+  const { showHidden, setShowHidden } = useViewPrefs();
+
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<NodeInfo | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<NodeInfo | null>(null);
@@ -95,6 +99,10 @@ export function FilesRoute() {
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <Breadcrumb path={currentPath} />
           <div className="flex items-center gap-2">
+            <ViewSettingsMenu
+              showHidden={showHidden}
+              onShowHiddenChange={setShowHidden}
+            />
             <Button
               variant="secondary"
               size="sm"
@@ -126,6 +134,8 @@ export function FilesRoute() {
           stat={stat}
           statError={statQuery.error}
           listQuery={listQuery}
+          showHidden={showHidden}
+          onShowHidden={() => setShowHidden(true)}
           onDownload={handleDownload}
           onRename={setRenameTarget}
           onDelete={setDeleteTarget}
@@ -186,6 +196,8 @@ interface BodyProps {
   stat: NodeInfo | undefined;
   statError: Error | null;
   listQuery: ReturnType<typeof useQuery<NodeInfo[]>>;
+  showHidden: boolean;
+  onShowHidden: () => void;
   onDownload: (n: NodeInfo) => void;
   onRename: (n: NodeInfo) => void;
   onDelete: (n: NodeInfo) => void;
@@ -198,6 +210,8 @@ function Body({
   stat,
   statError,
   listQuery,
+  showHidden,
+  onShowHidden,
   onDownload,
   onRename,
   onDelete,
@@ -232,8 +246,25 @@ function Body({
     );
   }
 
-  const entries = listQuery.data ?? [];
+  const allEntries = listQuery.data ?? [];
+  const entries = showHidden
+    ? allEntries
+    : allEntries.filter((n) => !n.name.startsWith("."));
   if (entries.length === 0) {
+    if (allEntries.length > 0) {
+      return (
+        <EmptyState
+          title="All entries are hidden"
+          description="Enable “Show hidden files” to see dot-prefixed entries."
+          icon={<Inbox className="size-6 text-muted-foreground" />}
+          action={
+            <Button variant="secondary" size="sm" onClick={onShowHidden}>
+              Show hidden files
+            </Button>
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         title="Empty folder"
@@ -278,10 +309,12 @@ function EmptyState({
   title,
   description,
   icon,
+  action,
 }: {
   title: string;
   description: string;
   icon: React.ReactNode;
+  action?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border bg-surface/50 px-6 py-16 text-center">
@@ -290,6 +323,7 @@ function EmptyState({
       </div>
       <h2 className="text-sm font-medium">{title}</h2>
       <p className="max-w-md text-sm text-muted-foreground">{description}</p>
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }
